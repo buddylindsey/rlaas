@@ -1,0 +1,12 @@
+# Go build outputs
+bin/
+*.exe
+*.test
+*.out
+*.prof
+coverage.out
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
