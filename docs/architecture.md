@@ -49,5 +49,10 @@ codec can produce the same service request types using a different byte layout.
 and the handler interface. It deliberately has no knowledge of TCP, frame
 lengths, or JSON field names.
 
-The next implementation work is rate-limiter state and the business behavior
-for creating, acquiring from, and deleting limiters.
+Limiter configuration is accessed through the `LimiterStore` interface. The
+initial implementation keeps configurations in a map protected by an RWMutex,
+while handlers depend only on the interface so a persistent store can replace
+it later.
+
+The next implementation work is the business behavior for acquiring from and
+deleting limiters.

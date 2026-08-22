@@ -1,4 +1,3 @@
-// Command server starts the RLAAS TCP server.
 package main
 
 import (

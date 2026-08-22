@@ -22,6 +22,7 @@ type Response struct {
 type CreateLimiterResponse struct {
 	Name    string
 	Created bool
+	Message string
 }
 
 type AcquireResponse struct {
