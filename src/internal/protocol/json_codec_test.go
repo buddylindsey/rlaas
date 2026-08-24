@@ -1,7 +1,8 @@
 package protocol
 
 import (
-	"errors"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"rlaas/src/internal/service"
@@ -42,7 +43,7 @@ func TestJSONCodecDecodeCreateLimiter(t *testing.T) {
 		"operation": "create_limiter",
 		"body": {
 			"name": "github-api",
-			"type": "token_bucket",
+			"type": "fixed_window",
 			"time_window_ms": 3600000,
 			"budget": 200
 		}
@@ -58,7 +59,7 @@ func TestJSONCodecDecodeCreateLimiter(t *testing.T) {
 	if !ok {
 		t.Fatalf("Body type = %T, want service.CreateLimiterRequest", request.Body)
 	}
-	if body.LimiterType != "token_bucket" || body.TimeWindowMs != 3600000 || body.Budget != 200 {
+	if body.LimiterType != "fixed_window" || body.TimeWindowMs != 3600000 || body.Budget != 200 {
 		t.Errorf("Body = %#v, want mapped create-limiter fields", body)
 	}
 }
@@ -104,11 +105,77 @@ func TestJSONCodecDecodeRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
-func TestJSONCodecEncodeIsExplicitlyUnimplemented(t *testing.T) {
+func TestJSONCodecEncodeCreateLimiterResponse(t *testing.T) {
 	codec := NewJSONCodec()
 
-	_, err := codec.Encode(service.Response{})
-	if !errors.Is(err, ErrJSONResponseEncodingNotImplemented) {
-		t.Fatalf("Encode() error = %v, want ErrJSONResponseEncodingNotImplemented", err)
+	payload, err := codec.Encode(service.Response{
+		RequestID: "01JCREATE1",
+		Status:    service.StatusOK,
+		Body: service.CreateLimiterResponse{
+			Name:    "github-api",
+			Created: false,
+			Message: "limiter already exists",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	assertJSONEqual(t, payload, []byte(`{
+		"request_id":"01JCREATE1",
+		"status":"ok",
+		"body":{
+			"name":"github-api",
+			"created":false,
+			"message":"limiter already exists"
+		}
+	}`))
+}
+
+func TestJSONCodecEncodeErrorResponse(t *testing.T) {
+	codec := NewJSONCodec()
+
+	payload, err := codec.Encode(service.Response{
+		RequestID: "01JERROR1",
+		Status:    service.StatusError,
+		Error: &service.ResponseError{
+			Code:    "limiter_not_found",
+			Message: "limiter does not exist",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	assertJSONEqual(t, payload, []byte(`{
+		"request_id":"01JERROR1",
+		"status":"error",
+		"error":{
+			"code":"limiter_not_found",
+			"message":"limiter does not exist"
+		}
+	}`))
+}
+
+func TestJSONCodecEncodeRejectsUnsupportedBody(t *testing.T) {
+	codec := NewJSONCodec()
+
+	if _, err := codec.Encode(service.Response{Body: struct{}{}}); err == nil {
+		t.Fatal("Encode() error = nil, want unsupported body error")
+	}
+}
+
+func assertJSONEqual(t *testing.T, got, want []byte) {
+	t.Helper()
+	var gotValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatalf("decode actual JSON: %v", err)
+	}
+	var wantValue any
+	if err := json.Unmarshal(want, &wantValue); err != nil {
+		t.Fatalf("decode expected JSON: %v", err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Errorf("JSON = %s, want %s", got, want)
 	}
 }

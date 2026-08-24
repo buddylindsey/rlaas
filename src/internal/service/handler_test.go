@@ -5,29 +5,6 @@ import (
 	"testing"
 )
 
-func TestBasicHandlerEchoesRequestBody(t *testing.T) {
-	handler := NewBasicHandler()
-	request := Request{
-		RequestID: "01JXYZ456",
-		Type:      RequestAcquire,
-		Body:      AcquireRequest{Name: "github-api"},
-	}
-
-	response, err := handler.Handle(context.Background(), request)
-	if err != nil {
-		t.Fatalf("Handle() error = %v", err)
-	}
-	if response.RequestID != request.RequestID {
-		t.Errorf("RequestID = %q, want %q", response.RequestID, request.RequestID)
-	}
-	if response.Status != StatusOK {
-		t.Errorf("Status = %q, want %q", response.Status, StatusOK)
-	}
-	if response.Body != request.Body {
-		t.Errorf("Body = %#v, want %#v", response.Body, request.Body)
-	}
-}
-
 func TestBasicHandlerCreatesLimiterInStore(t *testing.T) {
 	store := NewMemoryLimiterStore()
 	handler := NewBasicHandlerWithStore(store)
@@ -36,7 +13,7 @@ func TestBasicHandlerCreatesLimiterInStore(t *testing.T) {
 		Type:      RequestCreateLimiter,
 		Body: CreateLimiterRequest{
 			Name:         "github-api",
-			LimiterType:  "token_bucket",
+			LimiterType:  LimiterTypeFixedWindow,
 			TimeWindowMs: 1_000,
 			Budget:       10,
 		},
@@ -54,16 +31,15 @@ func TestBasicHandlerCreatesLimiterInStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Get() error = %v", err)
 	}
-	if limiter.Budget != 10 || limiter.TimeWindowMs != 1_000 || limiter.LimiterType != "token_bucket" {
+	if limiter.Budget != 10 || limiter.TimeWindowMs != 1_000 || limiter.LimiterType != LimiterTypeFixedWindow {
 		t.Errorf("stored limiter = %#v, want request configuration", limiter)
 	}
 }
 
-func TestBasicHandlerTreatsExistingLimiterAsSuccess(t *testing.T) {
-	store := NewMemoryLimiterStore()
-	handler := NewBasicHandlerWithStore(store)
-	request := Request{
-		RequestID: "01JCREATE2",
+func TestBasicHandlerRejectsUnsupportedLimiterType(t *testing.T) {
+	handler := NewBasicHandler()
+	_, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JCREATEINVALID",
 		Type:      RequestCreateLimiter,
 		Body: CreateLimiterRequest{
 			Name:         "github-api",
@@ -71,16 +47,28 @@ func TestBasicHandlerTreatsExistingLimiterAsSuccess(t *testing.T) {
 			TimeWindowMs: 1_000,
 			Budget:       10,
 		},
+	})
+	if err == nil {
+		t.Fatal("Handle() error = nil, want unsupported limiter type error")
+	}
+}
+
+func TestBasicHandlerTreatsIdenticalLimiterAsSuccess(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	handler := NewBasicHandlerWithStore(store)
+	request := Request{
+		RequestID: "01JCREATE2",
+		Type:      RequestCreateLimiter,
+		Body: CreateLimiterRequest{
+			Name:         "github-api",
+			LimiterType:  LimiterTypeFixedWindow,
+			TimeWindowMs: 1_000,
+			Budget:       10,
+		},
 	}
 
 	if _, err := handler.Handle(context.Background(), request); err != nil {
 		t.Fatalf("first Handle() error = %v", err)
-	}
-	request.Body = CreateLimiterRequest{
-		Name:         "github-api",
-		LimiterType:  "token_bucket",
-		TimeWindowMs: 2_000,
-		Budget:       99,
 	}
 	response, err := handler.Handle(context.Background(), request)
 	if err != nil {
@@ -93,11 +81,68 @@ func TestBasicHandlerTreatsExistingLimiterAsSuccess(t *testing.T) {
 	if response.Body != want {
 		t.Errorf("Body = %#v, want %#v", response.Body, want)
 	}
-	limiter, err := store.Get(context.Background(), "github-api")
-	if err != nil {
-		t.Fatalf("store.Get() error = %v", err)
+}
+
+func TestBasicHandlerRejectsLimiterConfigurationConflict(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	handler := NewBasicHandlerWithStore(store)
+	request := Request{
+		RequestID: "01JCREATE3",
+		Type:      RequestCreateLimiter,
+		Body: CreateLimiterRequest{
+			Name:         "github-api",
+			LimiterType:  LimiterTypeFixedWindow,
+			TimeWindowMs: 1_000,
+			Budget:       10,
+		},
 	}
-	if limiter.TimeWindowMs != 1_000 || limiter.Budget != 10 {
-		t.Errorf("existing limiter was changed: %#v", limiter)
+	if _, err := handler.Handle(context.Background(), request); err != nil {
+		t.Fatalf("first Handle() error = %v", err)
+	}
+	request.Body = CreateLimiterRequest{
+		Name:         "github-api",
+		LimiterType:  LimiterTypeFixedWindow,
+		TimeWindowMs: 2_000,
+		Budget:       99,
+	}
+	response, err := handler.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("second Handle() error = %v, want nil", err)
+	}
+	if response.Status != StatusError || response.Error == nil {
+		t.Fatalf("response = %#v, want structured configuration conflict", response)
+	}
+	if response.Error.Code != "limiter_configuration_conflict" {
+		t.Errorf("error code = %q, want limiter_configuration_conflict", response.Error.Code)
+	}
+}
+
+func TestBasicHandlerAcquiresPermit(t *testing.T) {
+	handler := NewBasicHandler()
+	create := Request{
+		RequestID: "01JCREATE4",
+		Type:      RequestCreateLimiter,
+		Body: CreateLimiterRequest{
+			Name:         "github-api",
+			LimiterType:  LimiterTypeFixedWindow,
+			TimeWindowMs: 1_000,
+			Budget:       2,
+		},
+	}
+	if _, err := handler.Handle(context.Background(), create); err != nil {
+		t.Fatalf("create Handle() error = %v", err)
+	}
+
+	response, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JACQUIRE1",
+		Type:      RequestAcquire,
+		Body:      AcquireRequest{Name: "github-api"},
+	})
+	if err != nil {
+		t.Fatalf("acquire Handle() error = %v", err)
+	}
+	want := AcquireResponse{Allowed: true, Remaining: 1, RetryAfterMs: 0}
+	if response.RequestID != "01JACQUIRE1" || response.Body != want {
+		t.Errorf("response = %#v, want body %#v", response, want)
 	}
 }

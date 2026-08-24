@@ -11,10 +11,6 @@ import (
 
 type JSONCodec struct{}
 
-// ErrJSONResponseEncodingNotImplemented is returned until JSON response
-// encoding is added as the next protocol exercise.
-var ErrJSONResponseEncodingNotImplemented = errors.New("JSON response encoding is not implemented")
-
 // NewJSONCodec creates the JSON request codec.
 func NewJSONCodec() *JSONCodec {
 	return &JSONCodec{}
@@ -110,15 +106,91 @@ func decodeDeleteLimiter(envelope jsonRequestEnvelope) (service.Request, error) 
 	return service.Request{RequestID: envelope.RequestID, Type: service.RequestDeleteLimiter, Body: body}, nil
 }
 
-// Encode will be implemented after the remaining request types are added.
-func (c *JSONCodec) Encode(service.Response) ([]byte, error) {
-	return nil, ErrJSONResponseEncodingNotImplemented
+// Encode converts a typed service response to a JSON response envelope.
+func (c *JSONCodec) Encode(response service.Response) ([]byte, error) {
+	body, err := encodeResponseBody(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	envelope := jsonResponseEnvelope{
+		RequestID: response.RequestID,
+		Status:    response.Status,
+		Body:      body,
+	}
+	if response.Error != nil {
+		envelope.Error = &jsonResponseError{
+			Code:    response.Error.Code,
+			Message: response.Error.Message,
+		}
+	}
+
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("encode JSON response: %w", err)
+	}
+	return payload, nil
+}
+
+func encodeResponseBody(body any) (any, error) {
+	switch body := body.(type) {
+	case nil:
+		return nil, nil
+	case service.CreateLimiterResponse:
+		return jsonCreateLimiterResponseBody{
+			Name:    body.Name,
+			Created: body.Created,
+			Message: body.Message,
+		}, nil
+	case service.AcquireResponse:
+		return jsonAcquireResponseBody{
+			Allowed:      body.Allowed,
+			Remaining:    body.Remaining,
+			RetryAfterMs: body.RetryAfterMs,
+		}, nil
+	case service.DeleteLimiterResponse:
+		return jsonDeleteLimiterResponseBody{
+			Name:    body.Name,
+			Deleted: body.Deleted,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported response body type %T", body)
+	}
 }
 
 type jsonRequestEnvelope struct {
 	RequestID string              `json:"request_id"`
 	Operation service.RequestType `json:"operation"`
 	Body      json.RawMessage     `json:"body"`
+}
+
+type jsonResponseEnvelope struct {
+	RequestID string                 `json:"request_id"`
+	Status    service.ResponseStatus `json:"status"`
+	Body      any                    `json:"body,omitempty"`
+	Error     *jsonResponseError     `json:"error,omitempty"`
+}
+
+type jsonResponseError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type jsonCreateLimiterResponseBody struct {
+	Name    string `json:"name"`
+	Created bool   `json:"created"`
+	Message string `json:"message"`
+}
+
+type jsonAcquireResponseBody struct {
+	Allowed      bool   `json:"allowed"`
+	Remaining    uint64 `json:"remaining"`
+	RetryAfterMs uint64 `json:"retry_after_ms"`
+}
+
+type jsonDeleteLimiterResponseBody struct {
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
 }
 
 // jsonCreateLimiterBody is the JSON representation of a create-limiter body.

@@ -6,8 +6,9 @@ import (
 )
 
 var (
-	ErrLimiterAlreadyExists = errors.New("limiter already exists")
-	ErrLimiterNotFound      = errors.New("limiter not found")
+	ErrLimiterAlreadyExists         = errors.New("limiter already exists")
+	ErrLimiterConfigurationConflict = errors.New("limiter configuration conflict")
+	ErrLimiterNotFound              = errors.New("limiter not found")
 )
 
 // LimiterStore owns limiter persistence. Implementations must be safe for use
@@ -17,4 +18,5 @@ type LimiterStore interface {
 	Get(ctx context.Context, name string) (Limiter, error)
 	List(ctx context.Context) ([]Limiter, error)
 	Delete(ctx context.Context, name string) error
+	Acquire(ctx context.Context, name string) (AcquireResult, error)
 }

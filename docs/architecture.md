@@ -49,10 +49,10 @@ codec can produce the same service request types using a different byte layout.
 and the handler interface. It deliberately has no knowledge of TCP, frame
 lengths, or JSON field names.
 
-Limiter configuration is accessed through the `LimiterStore` interface. The
-initial implementation keeps configurations in a map protected by an RWMutex,
-while handlers depend only on the interface so a persistent store can replace
-it later.
+Limiter configuration and atomic acquisition are accessed through the
+`LimiterStore` interface, so handlers do not depend on the persistence model.
+The initial implementation keeps fixed-window limiters in a map protected by
+an RWMutex. Each limiter has its own mutex protecting window state, allowing
+different named limiters to process acquisitions independently.
 
-The next implementation work is the business behavior for acquiring from and
-deleting limiters.
+The next implementation work is deletion behavior and persistent storage.

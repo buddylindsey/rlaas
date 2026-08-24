@@ -12,7 +12,7 @@ import (
 func TestMemoryLimiterStoreCRUD(t *testing.T) {
 	store := NewMemoryLimiterStore()
 	ctx := context.Background()
-	limiter := Limiter{Name: "github-api", LimiterType: "token_bucket", TimeWindowMs: 1_000, Budget: 10}
+	limiter := Limiter{Name: "github-api", LimiterType: LimiterTypeFixedWindow, TimeWindowMs: 1_000, Budget: 10}
 
 	if err := store.Create(ctx, limiter); err != nil {
 		t.Fatalf("Create() error = %v", err)
