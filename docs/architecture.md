@@ -51,6 +51,9 @@ lengths, or JSON field names.
 
 Limiter configuration and atomic acquisition are accessed through the
 `LimiterStore` interface, so handlers do not depend on the persistence model.
+Configurations are normalized to trimmed, lowercase names and validated as
+immutable service values before they reach the store. Stores defensively reject
+invalid zero values.
 The initial implementation keeps fixed-window limiters in a map protected by
 an RWMutex. Each limiter has its own mutex protecting window state, allowing
 different named limiters to process acquisitions independently.

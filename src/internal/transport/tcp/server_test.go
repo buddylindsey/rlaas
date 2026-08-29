@@ -147,6 +147,30 @@ func TestServeConnectionReturnsJSONWhenLimiterIsMissing(t *testing.T) {
 	}
 }
 
+func TestServeConnectionReturnsJSONForInvalidLimiterConfiguration(t *testing.T) {
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+
+	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
+	go server.serveConnection(serverConnection)
+
+	request := []byte(`{
+		"request_id":"01JINVALID1",
+		"operation":"create_limiter",
+		"body":{"name":"api","type":"token_bucket","time_window_ms":1000,"budget":10}
+	}`)
+	if err := writeTestFrame(clientConnection, request); err != nil {
+		t.Fatalf("writeTestFrame() error = %v", err)
+	}
+	response := readJSONErrorResponse(t, clientConnection)
+	if response.RequestID != "01JINVALID1" {
+		t.Errorf("RequestID = %q, want 01JINVALID1", response.RequestID)
+	}
+	if response.Status != "error" || response.Error.Code != "invalid_limiter_configuration" {
+		t.Errorf("response = %#v, want invalid_limiter_configuration error", response)
+	}
+}
+
 type jsonErrorResponse struct {
 	RequestID string `json:"request_id"`
 	Status    string `json:"status"`

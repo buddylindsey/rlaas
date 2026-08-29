@@ -1,18 +1,86 @@
 package service
 
 import (
+	"errors"
+	"fmt"
+	"math"
+	"strings"
 	"sync"
 	"time"
 )
 
-const LimiterTypeFixedWindow = "fixed_window"
+// LimiterType identifies a rate-limiting algorithm.
+type LimiterType string
 
-// Limiter is the stored configuration for a named rate limiter.
-type Limiter struct {
-	Name         string
-	LimiterType  string
-	TimeWindowMs uint64
-	Budget       uint64
+// LimiterTypeFixedWindow applies a fixed budget within each time window.
+const LimiterTypeFixedWindow LimiterType = "fixed_window"
+
+// ErrInvalidLimiterConfiguration identifies a configuration that violates
+// limiter domain invariants.
+var ErrInvalidLimiterConfiguration = errors.New("invalid limiter configuration")
+
+// LimiterConfiguration is a validated, immutable limiter configuration.
+type LimiterConfiguration struct {
+	name        string
+	limiterType LimiterType
+	timeWindow  time.Duration
+	budget      uint64
+}
+
+// NewLimiterConfiguration normalizes and validates a limiter configuration.
+func NewLimiterConfiguration(name string, limiterType LimiterType, timeWindowMs, budget uint64) (LimiterConfiguration, error) {
+	if timeWindowMs > uint64(math.MaxInt64/int64(time.Millisecond)) {
+		return LimiterConfiguration{}, fmt.Errorf("%w: time window is too large", ErrInvalidLimiterConfiguration)
+	}
+
+	configuration := LimiterConfiguration{
+		name:        normalizeLimiterName(name),
+		limiterType: limiterType,
+		timeWindow:  time.Duration(timeWindowMs) * time.Millisecond,
+		budget:      budget,
+	}
+	if err := configuration.Validate(); err != nil {
+		return LimiterConfiguration{}, err
+	}
+	return configuration, nil
+}
+
+// Name returns the normalized limiter name.
+func (c LimiterConfiguration) Name() string { return c.name }
+
+// Type returns the configured limiter algorithm.
+func (c LimiterConfiguration) Type() LimiterType { return c.limiterType }
+
+// TimeWindow returns the configured window duration.
+func (c LimiterConfiguration) TimeWindow() time.Duration { return c.timeWindow }
+
+// TimeWindowMs returns the configured window duration in milliseconds.
+func (c LimiterConfiguration) TimeWindowMs() uint64 {
+	return uint64(c.timeWindow / time.Millisecond)
+}
+
+// Budget returns the number of permits available in each window.
+func (c LimiterConfiguration) Budget() uint64 { return c.budget }
+
+// Validate reports whether the configuration satisfies domain invariants.
+func (c LimiterConfiguration) Validate() error {
+	if c.name == "" || c.name != normalizeLimiterName(c.name) {
+		return fmt.Errorf("%w: name is required", ErrInvalidLimiterConfiguration)
+	}
+	if c.limiterType != LimiterTypeFixedWindow {
+		return fmt.Errorf("%w: unsupported limiter type %q", ErrInvalidLimiterConfiguration, c.limiterType)
+	}
+	if c.timeWindow <= 0 {
+		return fmt.Errorf("%w: time window must be greater than zero", ErrInvalidLimiterConfiguration)
+	}
+	if c.budget == 0 {
+		return fmt.Errorf("%w: budget must be greater than zero", ErrInvalidLimiterConfiguration)
+	}
+	return nil
+}
+
+func normalizeLimiterName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 // FixedWindowLimiter tracks permit usage during a fixed interval.
@@ -31,11 +99,11 @@ type AcquireResult struct {
 	RetryAfterMs uint64
 }
 
-func newFixedWindowLimiter(configuration Limiter) *FixedWindowLimiter {
+func newFixedWindowLimiter(configuration LimiterConfiguration) *FixedWindowLimiter {
 	return &FixedWindowLimiter{
-		Name:       configuration.Name,
-		Budget:     configuration.Budget,
-		TimeWindow: time.Duration(configuration.TimeWindowMs) * time.Millisecond,
+		Name:       configuration.Name(),
+		Budget:     configuration.Budget(),
+		TimeWindow: configuration.TimeWindow(),
 	}
 }
 

@@ -14,9 +14,9 @@ var (
 // LimiterStore owns limiter persistence. Implementations must be safe for use
 // by multiple goroutines.
 type LimiterStore interface {
-	Create(ctx context.Context, limiter Limiter) error
-	Get(ctx context.Context, name string) (Limiter, error)
-	List(ctx context.Context) ([]Limiter, error)
+	Create(ctx context.Context, limiter LimiterConfiguration) error
+	Get(ctx context.Context, name string) (LimiterConfiguration, error)
+	List(ctx context.Context) ([]LimiterConfiguration, error)
 	Delete(ctx context.Context, name string) error
 	Acquire(ctx context.Context, name string) (AcquireResult, error)
 }

@@ -55,9 +55,8 @@ func TestFixedWindowResetsAfterWindow(t *testing.T) {
 func TestFixedWindowSeparateLimitersHaveIndependentState(t *testing.T) {
 	store := NewMemoryLimiterStore()
 	for _, name := range []string{"api-a", "api-b"} {
-		err := store.Create(context.Background(), Limiter{
-			Name: name, LimiterType: LimiterTypeFixedWindow, TimeWindowMs: 60_000, Budget: 1,
-		})
+		configuration := newTestLimiterConfiguration(t, name, 60_000, 1)
+		err := store.Create(context.Background(), configuration)
 		if err != nil {
 			t.Fatalf("Create(%q) error = %v", name, err)
 		}

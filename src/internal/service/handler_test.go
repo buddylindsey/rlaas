@@ -31,7 +31,7 @@ func TestBasicHandlerCreatesLimiterInStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Get() error = %v", err)
 	}
-	if limiter.Budget != 10 || limiter.TimeWindowMs != 1_000 || limiter.LimiterType != LimiterTypeFixedWindow {
+	if limiter.Budget() != 10 || limiter.TimeWindowMs() != 1_000 || limiter.Type() != LimiterTypeFixedWindow {
 		t.Errorf("stored limiter = %#v, want request configuration", limiter)
 	}
 }
@@ -144,5 +144,64 @@ func TestBasicHandlerAcquiresPermit(t *testing.T) {
 	want := AcquireResponse{Allowed: true, Remaining: 1, RetryAfterMs: 0}
 	if response.RequestID != "01JACQUIRE1" || response.Body != want {
 		t.Errorf("response = %#v, want body %#v", response, want)
+	}
+}
+
+func TestBasicHandlerUsesNormalizedLimiterName(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	handler := NewBasicHandlerWithStore(store)
+	createResponse, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JCREATE5",
+		Type:      RequestCreateLimiter,
+		Body: CreateLimiterRequest{
+			Name:         "  GitHub-API  ",
+			LimiterType:  LimiterTypeFixedWindow,
+			TimeWindowMs: 1_000,
+			Budget:       1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Handle() error = %v", err)
+	}
+	wantCreate := CreateLimiterResponse{Name: "github-api", Created: true, Message: "limiter created"}
+	if createResponse.Body != wantCreate {
+		t.Errorf("create response body = %#v, want %#v", createResponse.Body, wantCreate)
+	}
+
+	acquireResponse, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JACQUIRE2",
+		Type:      RequestAcquire,
+		Body:      AcquireRequest{Name: " GITHUB-api "},
+	})
+	if err != nil {
+		t.Fatalf("acquire Handle() error = %v", err)
+	}
+	if got, ok := acquireResponse.Body.(AcquireResponse); !ok || !got.Allowed {
+		t.Errorf("acquire response body = %#v, want allowed", acquireResponse.Body)
+	}
+
+	duplicateResponse, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JCREATE6",
+		Type:      RequestCreateLimiter,
+		Body: CreateLimiterRequest{
+			Name:         "GITHUB-API",
+			LimiterType:  LimiterTypeFixedWindow,
+			TimeWindowMs: 1_000,
+			Budget:       1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("duplicate create Handle() error = %v", err)
+	}
+	wantDuplicate := CreateLimiterResponse{Name: "github-api", Created: false, Message: "limiter already exists"}
+	if duplicateResponse.Body != wantDuplicate {
+		t.Errorf("duplicate response body = %#v, want %#v", duplicateResponse.Body, wantDuplicate)
+	}
+	limiters, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("store.List() error = %v", err)
+	}
+	if len(limiters) != 1 {
+		t.Errorf("stored limiter count = %d, want 1", len(limiters))
 	}
 }

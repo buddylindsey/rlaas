@@ -12,7 +12,7 @@ import (
 func TestMemoryLimiterStoreCRUD(t *testing.T) {
 	store := NewMemoryLimiterStore()
 	ctx := context.Background()
-	limiter := Limiter{Name: "github-api", LimiterType: LimiterTypeFixedWindow, TimeWindowMs: 1_000, Budget: 10}
+	limiter := newTestLimiterConfiguration(t, "github-api", 1_000, 10)
 
 	if err := store.Create(ctx, limiter); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -21,7 +21,7 @@ func TestMemoryLimiterStoreCRUD(t *testing.T) {
 		t.Fatalf("second Create() error = %v, want ErrLimiterAlreadyExists", err)
 	}
 
-	got, err := store.Get(ctx, limiter.Name)
+	got, err := store.Get(ctx, limiter.Name())
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -29,14 +29,28 @@ func TestMemoryLimiterStoreCRUD(t *testing.T) {
 		t.Errorf("Get() = %#v, want %#v", got, limiter)
 	}
 
-	if err := store.Delete(ctx, limiter.Name); err != nil {
+	if err := store.Delete(ctx, limiter.Name()); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
-	if _, err := store.Get(ctx, limiter.Name); !errors.Is(err, ErrLimiterNotFound) {
+	if _, err := store.Get(ctx, limiter.Name()); !errors.Is(err, ErrLimiterNotFound) {
 		t.Fatalf("Get() after delete error = %v, want ErrLimiterNotFound", err)
 	}
-	if err := store.Delete(ctx, limiter.Name); !errors.Is(err, ErrLimiterNotFound) {
+	if err := store.Delete(ctx, limiter.Name()); !errors.Is(err, ErrLimiterNotFound) {
 		t.Fatalf("second Delete() error = %v, want ErrLimiterNotFound", err)
+	}
+}
+
+func TestMemoryLimiterStoreRejectsInvalidConfiguration(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	if err := store.Create(context.Background(), LimiterConfiguration{}); !errors.Is(err, ErrInvalidLimiterConfiguration) {
+		t.Fatalf("Create() error = %v, want ErrInvalidLimiterConfiguration", err)
+	}
+	limiters, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(limiters) != 0 {
+		t.Errorf("List() length = %d, want 0", len(limiters))
 	}
 }
 
@@ -44,7 +58,7 @@ func TestMemoryLimiterStoreListIsSorted(t *testing.T) {
 	store := NewMemoryLimiterStore()
 	ctx := context.Background()
 	for _, name := range []string{"charlie", "alpha", "bravo"} {
-		if err := store.Create(ctx, Limiter{Name: name}); err != nil {
+		if err := store.Create(ctx, newTestLimiterConfiguration(t, name, 1_000, 1)); err != nil {
 			t.Fatalf("Create(%q) error = %v", name, err)
 		}
 	}
@@ -54,8 +68,8 @@ func TestMemoryLimiterStoreListIsSorted(t *testing.T) {
 		t.Fatalf("List() error = %v", err)
 	}
 	for i, want := range []string{"alpha", "bravo", "charlie"} {
-		if limiters[i].Name != want {
-			t.Errorf("List()[%d].Name = %q, want %q", i, limiters[i].Name, want)
+		if limiters[i].Name() != want {
+			t.Errorf("List()[%d].Name = %q, want %q", i, limiters[i].Name(), want)
 		}
 	}
 }
@@ -67,11 +81,12 @@ func TestMemoryLimiterStoreConcurrentCreateIsAtomic(t *testing.T) {
 	var created atomic.Int32
 	var unexpected atomic.Int32
 	var wg sync.WaitGroup
+	limiter := newTestLimiterConfiguration(t, "shared", 1_000, 1)
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := store.Create(context.Background(), Limiter{Name: "shared"})
+			err := store.Create(context.Background(), limiter)
 			switch {
 			case err == nil:
 				created.Add(1)
@@ -102,7 +117,12 @@ func TestMemoryLimiterStoreConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			name := fmt.Sprintf("limiter-%03d", i)
-			if err := store.Create(context.Background(), Limiter{Name: name}); err != nil {
+			limiter, err := NewLimiterConfiguration(name, LimiterTypeFixedWindow, 1_000, 1)
+			if err != nil {
+				t.Errorf("NewLimiterConfiguration(%q) error = %v", name, err)
+				return
+			}
+			if err := store.Create(context.Background(), limiter); err != nil {
 				t.Errorf("Create(%q) error = %v", name, err)
 				return
 			}
@@ -120,4 +140,13 @@ func TestMemoryLimiterStoreConcurrentAccess(t *testing.T) {
 	if len(limiters) != workers {
 		t.Errorf("List() length = %d, want %d", len(limiters), workers)
 	}
+}
+
+func newTestLimiterConfiguration(t *testing.T, name string, timeWindowMs, budget uint64) LimiterConfiguration {
+	t.Helper()
+	configuration, err := NewLimiterConfiguration(name, LimiterTypeFixedWindow, timeWindowMs, budget)
+	if err != nil {
+		t.Fatalf("NewLimiterConfiguration() error = %v", err)
+	}
+	return configuration
 }

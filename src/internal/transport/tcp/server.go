@@ -173,6 +173,8 @@ func serviceErrorCode(err error) string {
 		return "limiter_not_found"
 	case errors.Is(err, service.ErrLimiterConfigurationConflict):
 		return "limiter_configuration_conflict"
+	case errors.Is(err, service.ErrInvalidLimiterConfiguration):
+		return "invalid_limiter_configuration"
 	case errors.Is(err, context.Canceled):
 		return "request_canceled"
 	case errors.Is(err, context.DeadlineExceeded):

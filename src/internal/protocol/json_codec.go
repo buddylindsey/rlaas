@@ -70,7 +70,7 @@ func decodeCreateLimiter(envelope jsonRequestEnvelope) (service.Request, error) 
 	}
 	body := service.CreateLimiterRequest{
 		Name:         wireBody.Name,
-		LimiterType:  wireBody.LimiterType,
+		LimiterType:  service.LimiterType(wireBody.LimiterType),
 		TimeWindowMs: wireBody.TimeWindowMs,
 		Budget:       wireBody.Budget,
 	}
@@ -79,7 +79,7 @@ func decodeCreateLimiter(envelope jsonRequestEnvelope) (service.Request, error) 
 	if strings.TrimSpace(body.Name) == "" {
 		required = append(required, "body.name is required")
 	}
-	if strings.TrimSpace(body.LimiterType) == "" {
+	if strings.TrimSpace(string(body.LimiterType)) == "" {
 		required = append(required, "body.type is required")
 	}
 	if body.TimeWindowMs == 0 {

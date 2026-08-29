@@ -16,7 +16,7 @@ type Request struct {
 
 type CreateLimiterRequest struct {
 	Name         string
-	LimiterType  string
+	LimiterType  LimiterType
 	TimeWindowMs uint64
 	Budget       uint64
 }

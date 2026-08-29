@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 	"sync"
-	"time"
 )
 
 // MemoryLimiterStore stores limiter configurations in process memory.
@@ -19,53 +18,55 @@ func NewMemoryLimiterStore() *MemoryLimiterStore {
 	return &MemoryLimiterStore{limiters: make(map[string]*FixedWindowLimiter)}
 }
 
-func (s *MemoryLimiterStore) Create(ctx context.Context, limiter Limiter) error {
+func (s *MemoryLimiterStore) Create(ctx context.Context, limiter LimiterConfiguration) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := limiter.Validate(); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if existing, exists := s.limiters[limiter.Name]; exists {
-		if existing.Budget == limiter.Budget && existing.TimeWindow == time.Duration(limiter.TimeWindowMs)*time.Millisecond {
+	if existing, exists := s.limiters[limiter.Name()]; exists {
+		if limiterConfiguration(existing) == limiter {
 			return ErrLimiterAlreadyExists
 		}
 		return ErrLimiterConfigurationConflict
 	}
-	s.limiters[limiter.Name] = newFixedWindowLimiter(limiter)
+	s.limiters[limiter.Name()] = newFixedWindowLimiter(limiter)
 	return nil
 }
 
-func (s *MemoryLimiterStore) Get(ctx context.Context, name string) (Limiter, error) {
+func (s *MemoryLimiterStore) Get(ctx context.Context, name string) (LimiterConfiguration, error) {
 	if err := ctx.Err(); err != nil {
-		return Limiter{}, err
+		return LimiterConfiguration{}, err
 	}
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	limiter, exists := s.limiters[name]
 	if !exists {
-		return Limiter{}, ErrLimiterNotFound
+		return LimiterConfiguration{}, ErrLimiterNotFound
 	}
 	return limiterConfiguration(limiter), nil
 }
 
-func (s *MemoryLimiterStore) List(ctx context.Context) ([]Limiter, error) {
+func (s *MemoryLimiterStore) List(ctx context.Context) ([]LimiterConfiguration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	s.mu.RLock()
-	limiters := make([]Limiter, 0, len(s.limiters))
+	limiters := make([]LimiterConfiguration, 0, len(s.limiters))
 	for _, limiter := range s.limiters {
 		limiters = append(limiters, limiterConfiguration(limiter))
 	}
 	s.mu.RUnlock()
 
 	sort.Slice(limiters, func(i, j int) bool {
-		return limiters[i].Name < limiters[j].Name
+		return limiters[i].Name() < limiters[j].Name()
 	})
 	return limiters, nil
 }
@@ -74,7 +75,6 @@ func (s *MemoryLimiterStore) Acquire(ctx context.Context, name string) (AcquireR
 	if err := ctx.Err(); err != nil {
 		return AcquireResult{}, err
 	}
-
 	s.mu.RLock()
 	limiter, exists := s.limiters[name]
 	s.mu.RUnlock()
@@ -84,12 +84,12 @@ func (s *MemoryLimiterStore) Acquire(ctx context.Context, name string) (AcquireR
 	return limiter.Acquire(), nil
 }
 
-func limiterConfiguration(limiter *FixedWindowLimiter) Limiter {
-	return Limiter{
-		Name:         limiter.Name,
-		LimiterType:  LimiterTypeFixedWindow,
-		TimeWindowMs: uint64(limiter.TimeWindow / time.Millisecond),
-		Budget:       limiter.Budget,
+func limiterConfiguration(limiter *FixedWindowLimiter) LimiterConfiguration {
+	return LimiterConfiguration{
+		name:        limiter.Name,
+		limiterType: LimiterTypeFixedWindow,
+		timeWindow:  limiter.TimeWindow,
+		budget:      limiter.Budget,
 	}
 }
 
@@ -97,7 +97,6 @@ func (s *MemoryLimiterStore) Delete(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
