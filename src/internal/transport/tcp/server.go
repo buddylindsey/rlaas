@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
+	"time"
 
 	"rlaas/src/internal/protocol"
 	"rlaas/src/internal/service"
@@ -20,50 +22,139 @@ const (
 
 // Server accepts TCP connections and delegates each received message to a Handler.
 type Server struct {
-	address string
+	config  ServerConfig
 	codec   protocol.Codec
 	handler service.Handler
+
+	mu           sync.Mutex
+	connections  map[net.Conn]*connectionState
+	shuttingDown bool
+	forceCancel  context.CancelFunc
+	wg           sync.WaitGroup
 }
 
-// NewServer creates a TCP server that listens on address.
-func NewServer(address string, codec protocol.Codec, handler service.Handler) *Server {
-	return &Server{address: address, codec: codec, handler: handler}
+type connectionState struct {
+	active bool
 }
 
-// ListenAndServe listens on the configured address and serves connections until
-// the listener encounters an error.
-func (s *Server) ListenAndServe() error {
-	listener, err := net.Listen("tcp", s.address)
+// ServerConfig controls TCP connection capacity and lifecycle deadlines.
+type ServerConfig struct {
+	Address         string
+	IdleTimeout     time.Duration
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	ShutdownTimeout time.Duration
+	MaxConnections  int
+}
+
+// DefaultServerConfig returns production-oriented defaults for address.
+func DefaultServerConfig(address string) ServerConfig {
+	return ServerConfig{
+		Address:         address,
+		IdleTimeout:     60 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    5 * time.Second,
+		ShutdownTimeout: 10 * time.Second,
+		MaxConnections:  1_024,
+	}
+}
+
+// NewServer creates a TCP server with validated lifecycle configuration.
+func NewServer(config ServerConfig, codec protocol.Codec, handler service.Handler) (*Server, error) {
+	if config.IdleTimeout <= 0 {
+		return nil, errors.New("idle timeout must be greater than zero")
+	}
+	if config.ReadTimeout <= 0 {
+		return nil, errors.New("read timeout must be greater than zero")
+	}
+	if config.WriteTimeout <= 0 {
+		return nil, errors.New("write timeout must be greater than zero")
+	}
+	if config.ShutdownTimeout <= 0 {
+		return nil, errors.New("shutdown timeout must be greater than zero")
+	}
+	if config.MaxConnections <= 0 {
+		return nil, errors.New("maximum connections must be greater than zero")
+	}
+	if codec == nil {
+		return nil, errors.New("codec is required")
+	}
+	if handler == nil {
+		return nil, errors.New("handler is required")
+	}
+	return &Server{
+		config:      config,
+		codec:       codec,
+		handler:     handler,
+		connections: make(map[net.Conn]*connectionState),
+	}, nil
+}
+
+// ListenAndServe listens until ctx is canceled or the listener fails.
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.config.Address)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
 
-	return s.Serve(listener)
+	return s.Serve(ctx, listener)
 }
 
-// Serve accepts connections from listener. It is exported to allow alternate
-// listener setup in tests and future application configuration.
-func (s *Server) Serve(listener net.Listener) error {
+// Serve accepts connections until ctx is canceled or listener fails.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
+	workCtx, forceCancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.forceCancel = forceCancel
+	s.mu.Unlock()
+	defer forceCancel()
+
+	shutdownStarted := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.beginShutdown(listener)
+		case <-shutdownStarted:
+		}
+	}()
+
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
+			close(shutdownStarted)
+			if ctx.Err() != nil {
+				return s.waitForShutdown()
+			}
+			s.forceShutdown()
 			return err
 		}
 
-		go s.serveConnection(connection)
+		if !s.addConnection(connection) {
+			connection.Close()
+			continue
+		}
+
+		s.wg.Add(1)
+		go s.serveConnection(workCtx, connection)
 	}
 }
 
-func (s *Server) serveConnection(connection net.Conn) {
-	defer connection.Close()
+func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
+	defer func() {
+		connection.Close()
+		s.removeConnection(connection)
+		s.wg.Done()
+	}()
 
 	for {
 		payload, err := s.readFrame(connection)
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if !isExpectedDisconnect(err) {
 				fmt.Println("error reading client message:", err)
 			}
+			return
+		}
+		if !s.markActive(connection) {
 			return
 		}
 
@@ -72,12 +163,18 @@ func (s *Server) serveConnection(connection net.Conn) {
 			if !s.writeError(connection, "", "invalid_request", err) {
 				return
 			}
+			if !s.markIdle(connection) {
+				return
+			}
 			continue
 		}
 
-		response, err := s.handler.Handle(context.Background(), request)
+		response, err := s.handler.Handle(ctx, request)
 		if err != nil {
 			if !s.writeError(connection, request.RequestID, serviceErrorCode(err), err) {
+				return
+			}
+			if !s.markIdle(connection) {
 				return
 			}
 			continue
@@ -88,11 +185,19 @@ func (s *Server) serveConnection(connection net.Conn) {
 			if !s.writeError(connection, request.RequestID, "response_encoding_failed", err) {
 				return
 			}
+			if !s.markIdle(connection) {
+				return
+			}
 			continue
 		}
 
 		if err := s.writeFrame(connection, payload); err != nil {
-			fmt.Println("error writing client response:", err)
+			if !isExpectedDisconnect(err) {
+				fmt.Println("error writing client response:", err)
+			}
+			return
+		}
+		if !s.markIdle(connection) {
 			return
 		}
 	}
@@ -101,8 +206,17 @@ func (s *Server) serveConnection(connection net.Conn) {
 // readFrame reads a 4-byte unsigned, big-endian payload length followed by the
 // payload bytes themselves.
 func (s *Server) readFrame(connection net.Conn) ([]byte, error) {
+	if err := connection.SetReadDeadline(time.Now().Add(s.config.IdleTimeout)); err != nil {
+		return nil, err
+	}
 	var header [frameLengthSize]byte
-	if _, err := io.ReadFull(connection, header[:]); err != nil {
+	if _, err := io.ReadFull(connection, header[:1]); err != nil {
+		return nil, err
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(s.config.ReadTimeout)); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(connection, header[1:]); err != nil {
 		return nil, err
 	}
 
@@ -115,6 +229,9 @@ func (s *Server) readFrame(connection net.Conn) ([]byte, error) {
 	if _, err := io.ReadFull(connection, payload); err != nil {
 		return nil, err
 	}
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
 	return payload, nil
 }
 
@@ -124,13 +241,110 @@ func (s *Server) writeFrame(connection net.Conn, payload []byte) error {
 	if len(payload) > maxFrameSize {
 		return fmt.Errorf("frame length %d exceeds maximum of %d bytes", len(payload), maxFrameSize)
 	}
+	if err := connection.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout)); err != nil {
+		return err
+	}
 
 	var header [frameLengthSize]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
 	if err := writeAll(connection, header[:]); err != nil {
 		return err
 	}
-	return writeAll(connection, payload)
+	if err := writeAll(connection, payload); err != nil {
+		return err
+	}
+	return connection.SetWriteDeadline(time.Time{})
+}
+
+func (s *Server) addConnection(connection net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.shuttingDown || len(s.connections) >= s.config.MaxConnections {
+		return false
+	}
+	s.connections[connection] = &connectionState{}
+	return true
+}
+
+func (s *Server) removeConnection(connection net.Conn) {
+	s.mu.Lock()
+	delete(s.connections, connection)
+	s.mu.Unlock()
+}
+
+func (s *Server) markActive(connection net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, exists := s.connections[connection]
+	if !exists || s.shuttingDown {
+		return false
+	}
+	state.active = true
+	return true
+}
+
+func (s *Server) markIdle(connection net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, exists := s.connections[connection]
+	if !exists {
+		return false
+	}
+	state.active = false
+	return !s.shuttingDown
+}
+
+func (s *Server) beginShutdown(listener net.Listener) {
+	s.mu.Lock()
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return
+	}
+	s.shuttingDown = true
+	listener.Close()
+	for connection, state := range s.connections {
+		if !state.active {
+			connection.Close()
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) waitForShutdown() error {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(s.config.ShutdownTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		s.forceShutdown()
+		return errors.New("server shutdown timed out")
+	}
+}
+
+func (s *Server) forceShutdown() {
+	s.mu.Lock()
+	if s.forceCancel != nil {
+		s.forceCancel()
+	}
+	for connection := range s.connections {
+		connection.Close()
+	}
+	s.mu.Unlock()
+}
+
+func isExpectedDisconnect(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func writeAll(connection net.Conn, payload []byte) error {

@@ -20,6 +20,12 @@ TCP connection
 own goroutine. It reads and writes frames, but treats each payload as opaque
 bytes.
 
+The server bounds connection resource usage with a maximum connection count,
+an idle timeout while waiting for a new frame, and shorter deadlines for
+finishing frames and writing responses. During graceful shutdown it closes idle
+connections immediately, allows active requests a bounded time to finish, and
+then cancels and closes remaining work.
+
 The frame format is a four-byte unsigned big-endian payload length followed by
 that number of payload bytes. This allows payloads to contain arbitrary data,
 including newline characters.

@@ -65,6 +65,8 @@ production are developed incrementally.
 ## ✅ What works today?
 
 - Concurrent TCP server with persistent client connections
+- Bounded connections with idle, frame-read, and response-write timeouts
+- Graceful shutdown for active requests
 - Four-byte, big-endian, length-prefixed message frames
 - JSON request and response codec
 - Named fixed-window limiters
@@ -169,6 +171,18 @@ The layers are intentionally separated:
 
 See [the architecture notes](docs/architecture.md) for more detail.
 
+### Client connection lifecycle
+
+RLaaS is designed for clients that maintain a small pool of persistent
+connections. The server may close an idle or unhealthy socket, and clients
+should discard and lazily replace that socket while preserving the configured
+pool size.
+
+Reconnecting is safe, but retry behavior depends on the operation. Creating an
+identical limiter is idempotent and may be retried. An acquire must not be
+automatically retried after an ambiguous connection failure because the server
+may have consumed the permit before the response was lost.
+
 ## 🧪 Project status and direction
 
 RLaaS currently provides a functional single-process path from a network
@@ -177,7 +191,6 @@ request through an atomic fixed-window acquisition. It does not yet provide:
 - Persistent limiter configuration or state
 - Coordination between multiple RLaaS instances
 - Authentication, authorization, or transport encryption
-- Graceful shutdown and production-grade connection management
 - Operational metrics, tracing, or service-level guarantees
 - Additional algorithms such as sliding windows or token buckets
 

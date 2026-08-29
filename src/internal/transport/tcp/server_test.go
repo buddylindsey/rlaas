@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -12,11 +13,8 @@ import (
 )
 
 func TestServeConnectionHandlesMultipleMessages(t *testing.T) {
-	serverConnection, clientConnection := net.Pipe()
+	clientConnection := startTestConnection(t, echoCodec{}, service.NewBasicHandler())
 	defer clientConnection.Close()
-
-	server := NewServer("", echoCodec{}, service.NewBasicHandler())
-	go server.serveConnection(serverConnection)
 
 	for _, message := range []string{"first", "second"} {
 		if err := writeTestFrame(clientConnection, []byte(message)); err != nil {
@@ -34,11 +32,8 @@ func TestServeConnectionHandlesMultipleMessages(t *testing.T) {
 }
 
 func TestServeConnectionCreatesLimiterAndReturnsJSON(t *testing.T) {
-	serverConnection, clientConnection := net.Pipe()
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
 	defer clientConnection.Close()
-
-	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
-	go server.serveConnection(serverConnection)
 
 	request := []byte(`{
 		"request_id":"01JCREATE1",
@@ -105,11 +100,8 @@ func TestServeConnectionCreatesLimiterAndReturnsJSON(t *testing.T) {
 }
 
 func TestServeConnectionReturnsJSONForInvalidRequest(t *testing.T) {
-	serverConnection, clientConnection := net.Pipe()
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
 	defer clientConnection.Close()
-
-	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
-	go server.serveConnection(serverConnection)
 
 	if err := writeTestFrame(clientConnection, []byte(`not JSON`)); err != nil {
 		t.Fatalf("writeTestFrame() error = %v", err)
@@ -124,11 +116,8 @@ func TestServeConnectionReturnsJSONForInvalidRequest(t *testing.T) {
 }
 
 func TestServeConnectionReturnsJSONWhenLimiterIsMissing(t *testing.T) {
-	serverConnection, clientConnection := net.Pipe()
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
 	defer clientConnection.Close()
-
-	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
-	go server.serveConnection(serverConnection)
 
 	request := []byte(`{
 		"request_id":"01JMISSING1",
@@ -148,11 +137,8 @@ func TestServeConnectionReturnsJSONWhenLimiterIsMissing(t *testing.T) {
 }
 
 func TestServeConnectionReturnsJSONForInvalidLimiterConfiguration(t *testing.T) {
-	serverConnection, clientConnection := net.Pipe()
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
 	defer clientConnection.Close()
-
-	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
-	go server.serveConnection(serverConnection)
 
 	request := []byte(`{
 		"request_id":"01JINVALID1",
@@ -195,6 +181,21 @@ func readJSONErrorResponse(t *testing.T, connection net.Conn) jsonErrorResponse 
 
 type echoCodec struct{}
 
+func startTestConnection(t *testing.T, codec protocol.Codec, handler service.Handler) net.Conn {
+	t.Helper()
+	serverConnection, clientConnection := net.Pipe()
+	server, err := NewServer(DefaultServerConfig(""), codec, handler)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	if !server.addConnection(serverConnection) {
+		t.Fatal("addConnection() = false, want true")
+	}
+	server.wg.Add(1)
+	go server.serveConnection(context.Background(), serverConnection)
+	return clientConnection
+}
+
 func (echoCodec) Decode(payload []byte) (service.Request, error) {
 	return service.Request{
 		RequestID: "test-request",
@@ -204,7 +205,10 @@ func (echoCodec) Decode(payload []byte) (service.Request, error) {
 }
 
 func (echoCodec) Encode(response service.Response) ([]byte, error) {
-	return []byte(response.Body.(string)), nil
+	if body, ok := response.Body.(string); ok {
+		return []byte(body), nil
+	}
+	return []byte("error"), nil
 }
 
 func writeTestFrame(connection net.Conn, payload []byte) error {
