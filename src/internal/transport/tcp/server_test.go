@@ -104,6 +104,71 @@ func TestServeConnectionCreatesLimiterAndReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestServeConnectionReturnsJSONForInvalidRequest(t *testing.T) {
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+
+	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
+	go server.serveConnection(serverConnection)
+
+	if err := writeTestFrame(clientConnection, []byte(`not JSON`)); err != nil {
+		t.Fatalf("writeTestFrame() error = %v", err)
+	}
+	response := readJSONErrorResponse(t, clientConnection)
+	if response.Status != "error" || response.Error.Code != "invalid_request" {
+		t.Errorf("response = %#v, want invalid_request error", response)
+	}
+	if response.Error.Message == "" {
+		t.Error("error message is empty")
+	}
+}
+
+func TestServeConnectionReturnsJSONWhenLimiterIsMissing(t *testing.T) {
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+
+	server := NewServer("", protocol.NewJSONCodec(), service.NewBasicHandler())
+	go server.serveConnection(serverConnection)
+
+	request := []byte(`{
+		"request_id":"01JMISSING1",
+		"operation":"acquire",
+		"body":{"name":"missing"}
+	}`)
+	if err := writeTestFrame(clientConnection, request); err != nil {
+		t.Fatalf("writeTestFrame() error = %v", err)
+	}
+	response := readJSONErrorResponse(t, clientConnection)
+	if response.RequestID != "01JMISSING1" {
+		t.Errorf("RequestID = %q, want 01JMISSING1", response.RequestID)
+	}
+	if response.Status != "error" || response.Error.Code != "limiter_not_found" {
+		t.Errorf("response = %#v, want limiter_not_found error", response)
+	}
+}
+
+type jsonErrorResponse struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+	Error     struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func readJSONErrorResponse(t *testing.T, connection net.Conn) jsonErrorResponse {
+	t.Helper()
+	payload, err := readTestFrame(connection)
+	if err != nil {
+		t.Fatalf("readTestFrame() error = %v", err)
+	}
+	var response jsonErrorResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode JSON error response %q: %v", payload, err)
+	}
+	return response
+}
+
 type echoCodec struct{}
 
 func (echoCodec) Decode(payload []byte) (service.Request, error) {

@@ -69,7 +69,7 @@ func (s *Server) serveConnection(connection net.Conn) {
 
 		request, err := s.codec.Decode(payload)
 		if err != nil {
-			if !s.writeError(connection, err) {
+			if !s.writeError(connection, "", "invalid_request", err) {
 				return
 			}
 			continue
@@ -77,7 +77,7 @@ func (s *Server) serveConnection(connection net.Conn) {
 
 		response, err := s.handler.Handle(context.Background(), request)
 		if err != nil {
-			if !s.writeError(connection, err) {
+			if !s.writeError(connection, request.RequestID, serviceErrorCode(err), err) {
 				return
 			}
 			continue
@@ -85,7 +85,7 @@ func (s *Server) serveConnection(connection net.Conn) {
 
 		payload, err = s.codec.Encode(response)
 		if err != nil {
-			if !s.writeError(connection, err) {
+			if !s.writeError(connection, request.RequestID, "response_encoding_failed", err) {
 				return
 			}
 			continue
@@ -147,10 +147,37 @@ func writeAll(connection net.Conn, payload []byte) error {
 	return nil
 }
 
-func (s *Server) writeError(connection net.Conn, err error) bool {
-	if writeErr := s.writeFrame(connection, []byte("ERROR: "+err.Error())); writeErr != nil {
+func (s *Server) writeError(connection net.Conn, requestID, code string, cause error) bool {
+	payload, err := s.codec.Encode(service.Response{
+		RequestID: requestID,
+		Status:    service.StatusError,
+		Error: &service.ResponseError{
+			Code:    code,
+			Message: cause.Error(),
+		},
+	})
+	if err != nil {
+		fmt.Println("error encoding client error response:", err)
+		return false
+	}
+	if writeErr := s.writeFrame(connection, payload); writeErr != nil {
 		fmt.Println("error writing client response:", writeErr)
 		return false
 	}
 	return true
+}
+
+func serviceErrorCode(err error) string {
+	switch {
+	case errors.Is(err, service.ErrLimiterNotFound):
+		return "limiter_not_found"
+	case errors.Is(err, service.ErrLimiterConfigurationConflict):
+		return "limiter_configuration_conflict"
+	case errors.Is(err, context.Canceled):
+		return "request_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request_deadline_exceeded"
+	default:
+		return "request_failed"
+	}
 }
