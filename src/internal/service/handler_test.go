@@ -244,6 +244,20 @@ func TestBasicHandlerDeleteMissingLimiterReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestBasicHandlerRejectsInvalidLimiterNamesForLookupOperations(t *testing.T) {
+	handler := NewBasicHandler()
+	requests := []Request{
+		{Type: RequestAcquire, Body: AcquireRequest{Name: "invalid name"}},
+		{Type: RequestDeleteLimiter, Body: DeleteLimiterRequest{Name: "invalid/name"}},
+	}
+	for _, request := range requests {
+		_, err := handler.Handle(context.Background(), request)
+		if !errors.Is(err, ErrInvalidLimiterConfiguration) {
+			t.Errorf("Handle(%q) error = %v, want ErrInvalidLimiterConfiguration", request.Type, err)
+		}
+	}
+}
+
 func TestBasicHandlerRejectsUnsupportedRequestType(t *testing.T) {
 	handler := NewBasicHandler()
 	if _, err := handler.Handle(context.Background(), Request{Type: RequestType("unknown")}); err == nil {

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +36,10 @@ func TestNewLimiterConfigurationRejectsInvalidValues(t *testing.T) {
 		budget       uint64
 	}{
 		{name: "   ", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
+		{name: strings.Repeat("a", MaxLimiterNameLength+1), limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
+		{name: "github api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
+		{name: "github/api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
+		{name: "github-🔥", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
 		{name: "api", limiterType: "token_bucket", timeWindowMs: 1_000, budget: 1},
 		{name: "api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 0, budget: 1},
 		{name: "api", limiterType: LimiterTypeFixedWindow, timeWindowMs: maxDurationMs + 1, budget: 1},

@@ -62,6 +62,12 @@ fails after the envelope is decoded, the protocol error retains `request_id` so
 the client can correlate the error response. A future binary codec can produce
 the same service request types using a different byte layout.
 
+JSON decoding rejects unknown fields. Request IDs are limited to 128 bytes of
+visible ASCII so client-controlled correlation values cannot create oversized
+responses or log records. Limiter names are normalized to lowercase, limited to
+128 ASCII characters, and may contain letters, numbers, periods, colons,
+underscores, and hyphens.
+
 ## Service
 
 `internal/service` contains the application-level request and response types

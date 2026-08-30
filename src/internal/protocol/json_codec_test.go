@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"rlaas/src/internal/service"
@@ -128,6 +129,47 @@ func TestJSONCodecMalformedJSONHasNoDecodeError(t *testing.T) {
 	var decodeErr *DecodeError
 	if errors.As(err, &decodeErr) {
 		t.Errorf("Decode() error = %#v, want error without request ID", decodeErr)
+	}
+}
+
+func TestJSONCodecRejectsInvalidRequestIDsWithoutPreservingThem(t *testing.T) {
+	codec := NewJSONCodec()
+	for _, requestID := range []string{
+		strings.Repeat("a", MaxRequestIDLength+1),
+		"contains space",
+		"contains\nnewline",
+		"unicode-🔥",
+	} {
+		payload, err := json.Marshal(map[string]any{
+			"request_id": requestID,
+			"operation":  "acquire",
+			"body":       map[string]any{"name": "github-api"},
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal() error = %v", err)
+		}
+		_, err = codec.Decode(payload)
+		if err == nil {
+			t.Errorf("Decode() request_id %q error = nil, want error", requestID)
+			continue
+		}
+		var decodeErr *DecodeError
+		if errors.As(err, &decodeErr) {
+			t.Errorf("Decode() request_id %q retained invalid ID", requestID)
+		}
+	}
+}
+
+func TestJSONCodecRejectsUnknownFields(t *testing.T) {
+	codec := NewJSONCodec()
+	for _, payload := range [][]byte{
+		[]byte(`{"request_id":"request-1","operation":"acquire","body":{"name":"api"},"unexpected":true}`),
+		[]byte(`{"request_id":"request-1","operation":"acquire","body":{"name":"api","unexpected":true}}`),
+		[]byte(`{"request_id":"request-1","operation":"create_limiter","body":{"name":"api","type":"fixed_window","time_window_ms":1000,"budget":1,"unexpected":true}}`),
+	} {
+		if _, err := codec.Decode(payload); err == nil {
+			t.Errorf("Decode(%s) error = nil, want unknown-field error", payload)
+		}
 	}
 }
 

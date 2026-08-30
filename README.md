@@ -71,6 +71,7 @@ production are developed incrementally.
 - Structured JSON logs with request lifecycle correlation
 - Four-byte, big-endian, length-prefixed message frames
 - JSON request and response codec
+- Strict JSON input validation with bounded request IDs and limiter names
 - Named fixed-window limiters
 - Create, acquire, and delete limiter operations
 - Atomic permit acquisition with per-limiter locking

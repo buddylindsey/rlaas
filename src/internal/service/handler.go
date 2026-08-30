@@ -46,8 +46,8 @@ func (h *BasicHandler) deleteLimiter(ctx context.Context, request Request) (Resp
 		return Response{}, fmt.Errorf("delete limiter body has type %T, want service.DeleteLimiterRequest", request.Body)
 	}
 	name := normalizeLimiterName(body.Name)
-	if name == "" {
-		return Response{}, errors.New("delete limiter name is required")
+	if err := validateNormalizedLimiterName(name); err != nil {
+		return Response{}, fmt.Errorf("delete limiter: %w: %v", ErrInvalidLimiterConfiguration, err)
 	}
 
 	if err := h.limiters.Delete(ctx, name); err != nil {
@@ -119,8 +119,8 @@ func (h *BasicHandler) acquire(ctx context.Context, request Request) (Response, 
 		return Response{}, fmt.Errorf("acquire body has type %T, want service.AcquireRequest", request.Body)
 	}
 	name := normalizeLimiterName(body.Name)
-	if name == "" {
-		return Response{}, errors.New("acquire limiter name is required")
+	if err := validateNormalizedLimiterName(name); err != nil {
+		return Response{}, fmt.Errorf("acquire limiter: %w: %v", ErrInvalidLimiterConfiguration, err)
 	}
 
 	result, err := h.limiters.Acquire(ctx, name)

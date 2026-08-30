@@ -136,6 +136,37 @@ func TestServeConnectionPreservesRequestIDForInvalidBody(t *testing.T) {
 	}
 }
 
+func TestServeConnectionRemainsUsableAfterUnknownField(t *testing.T) {
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
+	defer clientConnection.Close()
+
+	invalid := []byte(`{
+		"request_id":"01JUNKNOWNFIELD",
+		"operation":"acquire",
+		"body":{"name":"missing","unexpected":true}
+	}`)
+	if err := writeTestFrame(clientConnection, invalid); err != nil {
+		t.Fatalf("write invalid frame error = %v", err)
+	}
+	response := readJSONErrorResponse(t, clientConnection)
+	if response.RequestID != "01JUNKNOWNFIELD" || response.Error.Code != "invalid_request" {
+		t.Fatalf("invalid response = %#v", response)
+	}
+
+	valid := []byte(`{
+		"request_id":"01JAFTERINVALID",
+		"operation":"acquire",
+		"body":{"name":"missing"}
+	}`)
+	if err := writeTestFrame(clientConnection, valid); err != nil {
+		t.Fatalf("write valid frame error = %v", err)
+	}
+	response = readJSONErrorResponse(t, clientConnection)
+	if response.RequestID != "01JAFTERINVALID" || response.Error.Code != "limiter_not_found" {
+		t.Errorf("response after invalid request = %#v", response)
+	}
+}
+
 func TestServeConnectionReturnsJSONWhenLimiterIsMissing(t *testing.T) {
 	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
 	defer clientConnection.Close()

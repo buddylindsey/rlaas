@@ -1,15 +1,20 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"rlaas/src/internal/service"
 )
 
 type JSONCodec struct{}
+
+// MaxRequestIDLength bounds correlation data copied into responses and logs.
+const MaxRequestIDLength = 128
 
 // NewJSONCodec creates the JSON request codec.
 func NewJSONCodec() *JSONCodec {
@@ -41,7 +46,7 @@ func (c *JSONCodec) Decode(payload []byte) (service.Request, error) {
 }
 
 func decodeError(requestID string, err error) error {
-	if strings.TrimSpace(requestID) == "" {
+	if validateRequestID(requestID) != nil {
 		return err
 	}
 	return &DecodeError{RequestID: requestID, Err: err}
@@ -49,11 +54,11 @@ func decodeError(requestID string, err error) error {
 
 func decodeEnvelope(payload []byte) (jsonRequestEnvelope, error) {
 	var envelope jsonRequestEnvelope
-	if err := json.Unmarshal(payload, &envelope); err != nil {
+	if err := decodeStrictJSON(payload, &envelope); err != nil {
 		return jsonRequestEnvelope{}, fmt.Errorf("decode JSON request: %w", err)
 	}
-	if strings.TrimSpace(envelope.RequestID) == "" {
-		return envelope, errors.New("request_id is required")
+	if err := validateRequestID(envelope.RequestID); err != nil {
+		return envelope, err
 	}
 	if envelope.Operation == "" {
 		return envelope, errors.New("operation is required")
@@ -66,7 +71,7 @@ func decodeEnvelope(payload []byte) (jsonRequestEnvelope, error) {
 
 func decodeAcquire(envelope jsonRequestEnvelope) (service.Request, error) {
 	var body service.AcquireRequest
-	if err := json.Unmarshal(envelope.Body, &body); err != nil {
+	if err := decodeStrictJSON(envelope.Body, &body); err != nil {
 		return service.Request{}, fmt.Errorf("decode acquire body: %w", err)
 	}
 	if strings.TrimSpace(body.Name) == "" {
@@ -77,7 +82,7 @@ func decodeAcquire(envelope jsonRequestEnvelope) (service.Request, error) {
 
 func decodeCreateLimiter(envelope jsonRequestEnvelope) (service.Request, error) {
 	var wireBody jsonCreateLimiterBody
-	if err := json.Unmarshal(envelope.Body, &wireBody); err != nil {
+	if err := decodeStrictJSON(envelope.Body, &wireBody); err != nil {
 		return service.Request{}, fmt.Errorf("decode create limiter body: %w", err)
 	}
 	body := service.CreateLimiterRequest{
@@ -109,13 +114,45 @@ func decodeCreateLimiter(envelope jsonRequestEnvelope) (service.Request, error) 
 
 func decodeDeleteLimiter(envelope jsonRequestEnvelope) (service.Request, error) {
 	var body service.DeleteLimiterRequest
-	if err := json.Unmarshal(envelope.Body, &body); err != nil {
+	if err := decodeStrictJSON(envelope.Body, &body); err != nil {
 		return service.Request{}, fmt.Errorf("decode delete limiter body: %w", err)
 	}
 	if strings.TrimSpace(body.Name) == "" {
 		return service.Request{}, errors.New("delete_limiter body.name is required")
 	}
 	return service.Request{RequestID: envelope.RequestID, Type: service.RequestDeleteLimiter, Body: body}, nil
+}
+
+func validateRequestID(requestID string) error {
+	if requestID == "" {
+		return errors.New("request_id is required")
+	}
+	if len(requestID) > MaxRequestIDLength {
+		return fmt.Errorf("request_id must not exceed %d bytes", MaxRequestIDLength)
+	}
+	for _, character := range requestID {
+		if character < '!' || character > '~' {
+			return errors.New("request_id must contain only visible ASCII characters")
+		}
+	}
+	return nil
+}
+
+func decodeStrictJSON(payload []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values are not allowed")
+		}
+		return err
+	}
+	return nil
 }
 
 // Encode converts a typed service response to a JSON response envelope.

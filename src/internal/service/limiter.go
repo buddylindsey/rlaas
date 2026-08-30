@@ -15,6 +15,10 @@ type LimiterType string
 // LimiterTypeFixedWindow applies a fixed budget within each time window.
 const LimiterTypeFixedWindow LimiterType = "fixed_window"
 
+// MaxLimiterNameLength is the maximum encoded length of a normalized limiter
+// name. Limiter names are ASCII, so the byte and character limits are equal.
+const MaxLimiterNameLength = 128
+
 // ErrInvalidLimiterConfiguration identifies a configuration that violates
 // limiter domain invariants.
 var ErrInvalidLimiterConfiguration = errors.New("invalid limiter configuration")
@@ -64,8 +68,8 @@ func (c LimiterConfiguration) Budget() uint64 { return c.budget }
 
 // Validate reports whether the configuration satisfies domain invariants.
 func (c LimiterConfiguration) Validate() error {
-	if c.name == "" || c.name != normalizeLimiterName(c.name) {
-		return fmt.Errorf("%w: name is required", ErrInvalidLimiterConfiguration)
+	if err := validateNormalizedLimiterName(c.name); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidLimiterConfiguration, err)
 	}
 	if c.limiterType != LimiterTypeFixedWindow {
 		return fmt.Errorf("%w: unsupported limiter type %q", ErrInvalidLimiterConfiguration, c.limiterType)
@@ -81,6 +85,30 @@ func (c LimiterConfiguration) Validate() error {
 
 func normalizeLimiterName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func validateNormalizedLimiterName(name string) error {
+	if name == "" {
+		return errors.New("name is required")
+	}
+	if name != normalizeLimiterName(name) {
+		return errors.New("name must be normalized")
+	}
+	if len(name) > MaxLimiterNameLength {
+		return fmt.Errorf("name must not exceed %d bytes", MaxLimiterNameLength)
+	}
+	for _, character := range name {
+		if !isLimiterNameCharacter(character) {
+			return errors.New("name may contain only letters, numbers, periods, colons, underscores, and hyphens")
+		}
+	}
+	return nil
+}
+
+func isLimiterNameCharacter(character rune) bool {
+	return character >= 'a' && character <= 'z' ||
+		character >= '0' && character <= '9' ||
+		character == '.' || character == ':' || character == '_' || character == '-'
 }
 
 // FixedWindowLimiter tracks permit usage during a fixed interval.
