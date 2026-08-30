@@ -33,13 +33,34 @@ func (h *BasicHandler) Handle(ctx context.Context, request Request) (Response, e
 		return h.createLimiter(ctx, request)
 	case RequestAcquire:
 		return h.acquire(ctx, request)
+	case RequestDeleteLimiter:
+		return h.deleteLimiter(ctx, request)
 	default:
-		return Response{
-			RequestID: request.RequestID,
-			Status:    StatusOK,
-			Body:      request.Body,
-		}, nil
+		return Response{}, fmt.Errorf("unsupported request type %q", request.Type)
 	}
+}
+
+func (h *BasicHandler) deleteLimiter(ctx context.Context, request Request) (Response, error) {
+	body, ok := request.Body.(DeleteLimiterRequest)
+	if !ok {
+		return Response{}, fmt.Errorf("delete limiter body has type %T, want service.DeleteLimiterRequest", request.Body)
+	}
+	name := normalizeLimiterName(body.Name)
+	if name == "" {
+		return Response{}, errors.New("delete limiter name is required")
+	}
+
+	if err := h.limiters.Delete(ctx, name); err != nil {
+		return Response{}, fmt.Errorf("delete limiter %q: %w", name, err)
+	}
+	return Response{
+		RequestID: request.RequestID,
+		Status:    StatusOK,
+		Body: DeleteLimiterResponse{
+			Name:    name,
+			Deleted: true,
+		},
+	}, nil
 }
 
 func (h *BasicHandler) createLimiter(ctx context.Context, request Request) (Response, error) {

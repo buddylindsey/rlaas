@@ -70,6 +70,7 @@ production are developed incrementally.
 - Four-byte, big-endian, length-prefixed message frames
 - JSON request and response codec
 - Named fixed-window limiters
+- Create, acquire, and delete limiter operations
 - Atomic permit acquisition with per-limiter locking
 - Idempotent creation for identical limiter configurations
 - Configuration conflict detection for duplicate names with different settings

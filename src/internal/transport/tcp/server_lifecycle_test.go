@@ -22,7 +22,7 @@ func TestNewServerRejectsInvalidConfig(t *testing.T) {
 		func() ServerConfig { config := valid; config.MaxConnections = 0; return config }(),
 	}
 	for _, config := range tests {
-		if _, err := NewServer(config, echoCodec{}, service.NewBasicHandler()); err == nil {
+		if _, err := NewServer(config, echoCodec{}, echoHandler{}); err == nil {
 			t.Errorf("NewServer(%#v) error = nil, want validation error", config)
 		}
 	}
@@ -30,7 +30,7 @@ func TestNewServerRejectsInvalidConfig(t *testing.T) {
 
 func TestIdleConnectionTimesOut(t *testing.T) {
 	config := shortTimeoutConfig()
-	client := startTestConnectionWithConfig(t, config, echoCodec{}, service.NewBasicHandler())
+	client := startTestConnectionWithConfig(t, config, echoCodec{}, echoHandler{})
 	defer client.Close()
 
 	assertConnectionClosed(t, client)
@@ -38,7 +38,7 @@ func TestIdleConnectionTimesOut(t *testing.T) {
 
 func TestPartialFramePayloadTimesOut(t *testing.T) {
 	config := shortTimeoutConfig()
-	client := startTestConnectionWithConfig(t, config, echoCodec{}, service.NewBasicHandler())
+	client := startTestConnectionWithConfig(t, config, echoCodec{}, echoHandler{})
 	defer client.Close()
 
 	header := []byte{0, 0, 0, 10}
@@ -50,7 +50,7 @@ func TestPartialFramePayloadTimesOut(t *testing.T) {
 
 func TestPartialFrameHeaderTimesOut(t *testing.T) {
 	config := shortTimeoutConfig()
-	client := startTestConnectionWithConfig(t, config, echoCodec{}, service.NewBasicHandler())
+	client := startTestConnectionWithConfig(t, config, echoCodec{}, echoHandler{})
 	defer client.Close()
 
 	if _, err := client.Write([]byte{0}); err != nil {
@@ -61,7 +61,7 @@ func TestPartialFrameHeaderTimesOut(t *testing.T) {
 
 func TestResponseWriteTimesOut(t *testing.T) {
 	config := shortTimeoutConfig()
-	client := startTestConnectionWithConfig(t, config, echoCodec{}, service.NewBasicHandler())
+	client := startTestConnectionWithConfig(t, config, echoCodec{}, echoHandler{})
 	defer client.Close()
 
 	if err := writeTestFrame(client, []byte("response")); err != nil {
@@ -74,7 +74,7 @@ func TestResponseWriteTimesOut(t *testing.T) {
 func TestServerRejectsConnectionsOverLimit(t *testing.T) {
 	config := DefaultServerConfig("")
 	config.MaxConnections = 1
-	server, err := NewServer(config, echoCodec{}, service.NewBasicHandler())
+	server, err := NewServer(config, echoCodec{}, echoHandler{})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}

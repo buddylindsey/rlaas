@@ -64,4 +64,5 @@ The initial implementation keeps fixed-window limiters in a map protected by
 an RWMutex. Each limiter has its own mutex protecting window state, allowing
 different named limiters to process acquisitions independently.
 
-The next implementation work is deletion behavior and persistent storage.
+The next implementation work is persistent storage and additional limiter
+algorithms.

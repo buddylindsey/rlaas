@@ -13,7 +13,7 @@ import (
 )
 
 func TestServeConnectionHandlesMultipleMessages(t *testing.T) {
-	clientConnection := startTestConnection(t, echoCodec{}, service.NewBasicHandler())
+	clientConnection := startTestConnection(t, echoCodec{}, echoHandler{})
 	defer clientConnection.Close()
 
 	for _, message := range []string{"first", "second"} {
@@ -157,6 +157,66 @@ func TestServeConnectionReturnsJSONForInvalidLimiterConfiguration(t *testing.T) 
 	}
 }
 
+func TestServeConnectionDeletesLimiter(t *testing.T) {
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
+	defer clientConnection.Close()
+
+	create := []byte(`{
+		"request_id":"01JCREATEDELETE",
+		"operation":"create_limiter",
+		"body":{"name":"github-api","type":"fixed_window","time_window_ms":1000,"budget":10}
+	}`)
+	if err := writeTestFrame(clientConnection, create); err != nil {
+		t.Fatalf("write create frame error = %v", err)
+	}
+	if _, err := readTestFrame(clientConnection); err != nil {
+		t.Fatalf("read create frame error = %v", err)
+	}
+
+	deleteRequest := []byte(`{
+		"request_id":"01JDELETE1",
+		"operation":"delete_limiter",
+		"body":{"name":" GITHUB-API "}
+	}`)
+	if err := writeTestFrame(clientConnection, deleteRequest); err != nil {
+		t.Fatalf("write delete frame error = %v", err)
+	}
+	payload, err := readTestFrame(clientConnection)
+	if err != nil {
+		t.Fatalf("read delete frame error = %v", err)
+	}
+	var deleteResponse struct {
+		RequestID string `json:"request_id"`
+		Status    string `json:"status"`
+		Body      struct {
+			Name    string `json:"name"`
+			Deleted bool   `json:"deleted"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal(payload, &deleteResponse); err != nil {
+		t.Fatalf("decode delete response %q: %v", payload, err)
+	}
+	if deleteResponse.RequestID != "01JDELETE1" || deleteResponse.Status != "ok" {
+		t.Errorf("delete response envelope = %#v", deleteResponse)
+	}
+	if deleteResponse.Body.Name != "github-api" || !deleteResponse.Body.Deleted {
+		t.Errorf("delete response body = %#v", deleteResponse.Body)
+	}
+
+	acquire := []byte(`{
+		"request_id":"01JACQUIREDELETED",
+		"operation":"acquire",
+		"body":{"name":"github-api"}
+	}`)
+	if err := writeTestFrame(clientConnection, acquire); err != nil {
+		t.Fatalf("write acquire frame error = %v", err)
+	}
+	errorResponse := readJSONErrorResponse(t, clientConnection)
+	if errorResponse.RequestID != "01JACQUIREDELETED" || errorResponse.Error.Code != "limiter_not_found" {
+		t.Errorf("acquire after delete response = %#v", errorResponse)
+	}
+}
+
 type jsonErrorResponse struct {
 	RequestID string `json:"request_id"`
 	Status    string `json:"status"`
@@ -180,6 +240,12 @@ func readJSONErrorResponse(t *testing.T, connection net.Conn) jsonErrorResponse 
 }
 
 type echoCodec struct{}
+
+type echoHandler struct{}
+
+func (echoHandler) Handle(_ context.Context, request service.Request) (service.Response, error) {
+	return service.Response{RequestID: request.RequestID, Status: service.StatusOK, Body: request.Body}, nil
+}
 
 func startTestConnection(t *testing.T, codec protocol.Codec, handler service.Handler) net.Conn {
 	t.Helper()

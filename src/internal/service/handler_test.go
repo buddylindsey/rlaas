@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -203,5 +204,49 @@ func TestBasicHandlerUsesNormalizedLimiterName(t *testing.T) {
 	}
 	if len(limiters) != 1 {
 		t.Errorf("stored limiter count = %d, want 1", len(limiters))
+	}
+}
+
+func TestBasicHandlerDeletesLimiter(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	handler := NewBasicHandlerWithStore(store)
+	configuration := newTestLimiterConfiguration(t, "github-api", 1_000, 1)
+	if err := store.Create(context.Background(), configuration); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	response, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JDELETE1",
+		Type:      RequestDeleteLimiter,
+		Body:      DeleteLimiterRequest{Name: " GITHUB-API "},
+	})
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	want := DeleteLimiterResponse{Name: "github-api", Deleted: true}
+	if response.RequestID != "01JDELETE1" || response.Status != StatusOK || response.Body != want {
+		t.Errorf("response = %#v, want body %#v", response, want)
+	}
+	if _, err := store.Get(context.Background(), "github-api"); !errors.Is(err, ErrLimiterNotFound) {
+		t.Errorf("store.Get() error = %v, want ErrLimiterNotFound", err)
+	}
+}
+
+func TestBasicHandlerDeleteMissingLimiterReturnsNotFound(t *testing.T) {
+	handler := NewBasicHandler()
+	_, err := handler.Handle(context.Background(), Request{
+		RequestID: "01JDELETE2",
+		Type:      RequestDeleteLimiter,
+		Body:      DeleteLimiterRequest{Name: "missing"},
+	})
+	if !errors.Is(err, ErrLimiterNotFound) {
+		t.Fatalf("Handle() error = %v, want ErrLimiterNotFound", err)
+	}
+}
+
+func TestBasicHandlerRejectsUnsupportedRequestType(t *testing.T) {
+	handler := NewBasicHandler()
+	if _, err := handler.Handle(context.Background(), Request{Type: RequestType("unknown")}); err == nil {
+		t.Fatal("Handle() error = nil, want unsupported request error")
 	}
 }
