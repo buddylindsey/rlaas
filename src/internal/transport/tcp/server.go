@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"rlaas/src/internal/protocol"
@@ -25,16 +27,19 @@ type Server struct {
 	config  ServerConfig
 	codec   protocol.Codec
 	handler service.Handler
+	logger  *slog.Logger
 
 	mu           sync.Mutex
 	connections  map[net.Conn]*connectionState
 	shuttingDown bool
 	forceCancel  context.CancelFunc
 	wg           sync.WaitGroup
+	nextConnID   atomic.Uint64
 }
 
 type connectionState struct {
 	active bool
+	id     uint64
 }
 
 // ServerConfig controls TCP connection capacity and lifecycle deadlines.
@@ -45,6 +50,7 @@ type ServerConfig struct {
 	WriteTimeout    time.Duration
 	ShutdownTimeout time.Duration
 	MaxConnections  int
+	Logger          *slog.Logger
 }
 
 // DefaultServerConfig returns production-oriented defaults for address.
@@ -82,10 +88,15 @@ func NewServer(config ServerConfig, codec protocol.Codec, handler service.Handle
 	if handler == nil {
 		return nil, errors.New("handler is required")
 	}
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &Server{
 		config:      config,
 		codec:       codec,
 		handler:     handler,
+		logger:      logger,
 		connections: make(map[net.Conn]*connectionState),
 	}, nil
 }
@@ -97,6 +108,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return err
 	}
 	defer listener.Close()
+	s.logger.Info("server listening", "address", listener.Addr().String())
 
 	return s.Serve(ctx, listener)
 }
@@ -130,9 +142,19 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		}
 
 		if !s.addConnection(connection) {
+			s.logger.Warn("connection rejected",
+				"remote_address", connection.RemoteAddr().String(),
+				"reason", "connection_limit_or_shutdown",
+			)
 			connection.Close()
 			continue
 		}
+		connectionID := s.connectionID(connection)
+		s.logger.Info("connection accepted",
+			"connection_id", connectionID,
+			"remote_address", connection.RemoteAddr().String(),
+			"connection_count", s.connectionCount(),
+		)
 
 		s.wg.Add(1)
 		go s.serveConnection(workCtx, connection)
@@ -140,17 +162,23 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 }
 
 func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
+	connectionLogger := s.logger.With(
+		"connection_id", s.connectionID(connection),
+		"remote_address", connection.RemoteAddr().String(),
+	)
 	defer func() {
 		connection.Close()
 		s.removeConnection(connection)
+		connectionLogger.Info("connection closed")
 		s.wg.Done()
 	}()
 
 	for {
+		started := time.Now()
 		payload, err := s.readFrame(connection)
 		if err != nil {
 			if !isExpectedDisconnect(err) {
-				fmt.Println("error reading client message:", err)
+				connectionLogger.Error("request frame read failed", "error", err)
 			}
 			return
 		}
@@ -165,31 +193,60 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 			if errors.As(err, &decodeErr) {
 				requestID = decodeErr.RequestID
 			}
-			if !s.writeError(connection, requestID, "invalid_request", err) {
+			requestLogger := connectionLogger.With("request_id", requestID)
+			requestLogger.Warn("request decode failed",
+				"error_code", "invalid_request",
+				"error", err,
+			)
+			if !s.writeError(requestLogger, connection, requestID, "invalid_request", err) {
 				return
 			}
+			requestLogger.Info("error response sent",
+				"error_code", "invalid_request",
+				"duration_ms", elapsedMilliseconds(started),
+			)
 			if !s.markIdle(connection) {
 				return
 			}
 			continue
 		}
+		requestLogger := connectionLogger.With(
+			"request_id", request.RequestID,
+			"operation", request.Type,
+		)
+		requestLogger.Info("request decoded")
 
 		response, err := s.handler.Handle(ctx, request)
 		if err != nil {
-			if !s.writeError(connection, request.RequestID, serviceErrorCode(err), err) {
+			code := serviceErrorCode(err)
+			requestLogger.Warn("request handling failed", "error_code", code, "error", err)
+			if !s.writeError(requestLogger, connection, request.RequestID, code, err) {
 				return
 			}
+			requestLogger.Info("error response sent",
+				"error_code", code,
+				"duration_ms", elapsedMilliseconds(started),
+			)
 			if !s.markIdle(connection) {
 				return
 			}
 			continue
 		}
+		requestLogger.Info("request handled", responseLogAttributes(response)...)
 
 		payload, err = s.codec.Encode(response)
 		if err != nil {
-			if !s.writeError(connection, request.RequestID, "response_encoding_failed", err) {
+			requestLogger.Error("response encoding failed",
+				"error_code", "response_encoding_failed",
+				"error", err,
+			)
+			if !s.writeError(requestLogger, connection, request.RequestID, "response_encoding_failed", err) {
 				return
 			}
+			requestLogger.Info("error response sent",
+				"error_code", "response_encoding_failed",
+				"duration_ms", elapsedMilliseconds(started),
+			)
 			if !s.markIdle(connection) {
 				return
 			}
@@ -198,10 +255,14 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 
 		if err := s.writeFrame(connection, payload); err != nil {
 			if !isExpectedDisconnect(err) {
-				fmt.Println("error writing client response:", err)
+				requestLogger.Error("response write failed", "error", err)
 			}
 			return
 		}
+		requestLogger.Info("response sent",
+			"status", response.Status,
+			"duration_ms", elapsedMilliseconds(started),
+		)
 		if !s.markIdle(connection) {
 			return
 		}
@@ -267,8 +328,23 @@ func (s *Server) addConnection(connection net.Conn) bool {
 	if s.shuttingDown || len(s.connections) >= s.config.MaxConnections {
 		return false
 	}
-	s.connections[connection] = &connectionState{}
+	s.connections[connection] = &connectionState{id: s.nextConnID.Add(1)}
 	return true
+}
+
+func (s *Server) connectionID(connection net.Conn) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state := s.connections[connection]; state != nil {
+		return state.id
+	}
+	return 0
+}
+
+func (s *Server) connectionCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.connections)
 }
 
 func (s *Server) removeConnection(connection net.Conn) {
@@ -306,6 +382,7 @@ func (s *Server) beginShutdown(listener net.Listener) {
 		return
 	}
 	s.shuttingDown = true
+	s.logger.Info("server shutdown started", "connection_count", len(s.connections))
 	listener.Close()
 	for connection, state := range s.connections {
 		if !state.active {
@@ -326,8 +403,10 @@ func (s *Server) waitForShutdown() error {
 	defer timer.Stop()
 	select {
 	case <-done:
+		s.logger.Info("server shutdown completed")
 		return nil
 	case <-timer.C:
+		s.logger.Error("server shutdown timed out", "timeout_ms", s.config.ShutdownTimeout.Milliseconds())
 		s.forceShutdown()
 		return errors.New("server shutdown timed out")
 	}
@@ -366,7 +445,7 @@ func writeAll(connection net.Conn, payload []byte) error {
 	return nil
 }
 
-func (s *Server) writeError(connection net.Conn, requestID, code string, cause error) bool {
+func (s *Server) writeError(logger *slog.Logger, connection net.Conn, requestID, code string, cause error) bool {
 	payload, err := s.codec.Encode(service.Response{
 		RequestID: requestID,
 		Status:    service.StatusError,
@@ -376,14 +455,38 @@ func (s *Server) writeError(connection net.Conn, requestID, code string, cause e
 		},
 	})
 	if err != nil {
-		fmt.Println("error encoding client error response:", err)
+		logger.Error("error response encoding failed", "error_code", code, "error", err)
 		return false
 	}
 	if writeErr := s.writeFrame(connection, payload); writeErr != nil {
-		fmt.Println("error writing client response:", writeErr)
+		logger.Error("error response write failed", "error_code", code, "error", writeErr)
 		return false
 	}
 	return true
+}
+
+func elapsedMilliseconds(started time.Time) float64 {
+	return float64(time.Since(started).Microseconds()) / 1_000
+}
+
+func responseLogAttributes(response service.Response) []any {
+	attributes := []any{"status", response.Status}
+	switch body := response.Body.(type) {
+	case service.CreateLimiterResponse:
+		attributes = append(attributes, "limiter_name", body.Name, "created", body.Created)
+	case service.AcquireResponse:
+		attributes = append(attributes,
+			"allowed", body.Allowed,
+			"remaining", body.Remaining,
+			"retry_after_ms", body.RetryAfterMs,
+		)
+	case service.DeleteLimiterResponse:
+		attributes = append(attributes, "limiter_name", body.Name, "deleted", body.Deleted)
+	}
+	if response.Error != nil {
+		attributes = append(attributes, "error_code", response.Error.Code)
+	}
+	return attributes
 }
 
 func serviceErrorCode(err error) string {

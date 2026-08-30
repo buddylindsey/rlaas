@@ -67,6 +67,7 @@ production are developed incrementally.
 - Concurrent TCP server with persistent client connections
 - Bounded connections with idle, frame-read, and response-write timeouts
 - Graceful shutdown for active requests
+- Structured JSON logs with request lifecycle correlation
 - Four-byte, big-endian, length-prefixed message frames
 - JSON request and response codec
 - Named fixed-window limiters
@@ -183,6 +184,21 @@ Reconnecting is safe, but retry behavior depends on the operation. Creating an
 identical limiter is idempotent and may be retried. An acquire must not be
 automatically retried after an ambiguous connection failure because the server
 may have consumed the permit before the response was lost.
+
+### Structured logging
+
+RLaaS writes structured JSON logs to standard output for collection by systems
+such as Datadog, ELK, and CloudWatch. Request lifecycle records include the
+`request_id`, operation, connection ID, remote address, outcome, and elapsed
+time where available. Search for a request ID to follow it from decoding through
+handling and response delivery. Request bodies are not logged.
+
+The default log level is `info`. Set `RLAAS_LOG_LEVEL` to `debug`, `warn`, or
+`error` to change it:
+
+```sh
+RLAAS_LOG_LEVEL=warn go run ./src/cmd/server
+```
 
 ## 🧪 Project status and direction
 

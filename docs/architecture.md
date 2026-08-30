@@ -26,6 +26,11 @@ finishing frames and writing responses. During graceful shutdown it closes idle
 connections immediately, allows active requests a bounded time to finish, and
 then cancels and closes remaining work.
 
+The transport emits structured JSON lifecycle logs. A stable connection ID
+correlates events before a request can be decoded; after decoding, every request
+event carries its client-provided request ID and operation through handling and
+response delivery. Payload bodies are deliberately excluded from logs.
+
 The frame format is a four-byte unsigned big-endian payload length followed by
 that number of payload bytes. This allows payloads to contain arbitrary data,
 including newline characters.
