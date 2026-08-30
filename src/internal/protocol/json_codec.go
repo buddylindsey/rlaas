@@ -20,19 +20,31 @@ func NewJSONCodec() *JSONCodec {
 func (c *JSONCodec) Decode(payload []byte) (service.Request, error) {
 	envelope, err := decodeEnvelope(payload)
 	if err != nil {
-		return service.Request{}, err
+		return service.Request{}, decodeError(envelope.RequestID, err)
 	}
 
+	var request service.Request
 	switch envelope.Operation {
 	case service.RequestAcquire:
-		return decodeAcquire(envelope)
+		request, err = decodeAcquire(envelope)
 	case service.RequestCreateLimiter:
-		return decodeCreateLimiter(envelope)
+		request, err = decodeCreateLimiter(envelope)
 	case service.RequestDeleteLimiter:
-		return decodeDeleteLimiter(envelope)
+		request, err = decodeDeleteLimiter(envelope)
 	default:
-		return service.Request{}, fmt.Errorf("unsupported operation %q", envelope.Operation)
+		err = fmt.Errorf("unsupported operation %q", envelope.Operation)
 	}
+	if err != nil {
+		return service.Request{}, decodeError(envelope.RequestID, err)
+	}
+	return request, nil
+}
+
+func decodeError(requestID string, err error) error {
+	if strings.TrimSpace(requestID) == "" {
+		return err
+	}
+	return &DecodeError{RequestID: requestID, Err: err}
 }
 
 func decodeEnvelope(payload []byte) (jsonRequestEnvelope, error) {
@@ -41,13 +53,13 @@ func decodeEnvelope(payload []byte) (jsonRequestEnvelope, error) {
 		return jsonRequestEnvelope{}, fmt.Errorf("decode JSON request: %w", err)
 	}
 	if strings.TrimSpace(envelope.RequestID) == "" {
-		return jsonRequestEnvelope{}, errors.New("request_id is required")
+		return envelope, errors.New("request_id is required")
 	}
 	if envelope.Operation == "" {
-		return jsonRequestEnvelope{}, errors.New("operation is required")
+		return envelope, errors.New("operation is required")
 	}
 	if len(envelope.Body) == 0 {
-		return jsonRequestEnvelope{}, errors.New("body is required")
+		return envelope, errors.New("body is required")
 	}
 	return envelope, nil
 }

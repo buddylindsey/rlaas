@@ -46,8 +46,10 @@ values. The active codec is JSON. Its request envelope contains:
 ```
 
 The codec decodes the envelope, dispatches on `operation`, validates its
-operation-specific body, and returns a typed service request. A future binary
-codec can produce the same service request types using a different byte layout.
+operation-specific body, and returns a typed service request. If validation
+fails after the envelope is decoded, the protocol error retains `request_id` so
+the client can correlate the error response. A future binary codec can produce
+the same service request types using a different byte layout.
 
 ## Service
 

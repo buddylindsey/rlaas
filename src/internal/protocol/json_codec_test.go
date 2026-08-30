@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -102,6 +103,31 @@ func TestJSONCodecDecodeRejectsInvalidRequests(t *testing.T) {
 		if _, err := codec.Decode(payload); err == nil {
 			t.Errorf("Decode(%s) error = nil, want error", payload)
 		}
+	}
+}
+
+func TestJSONCodecDecodeErrorPreservesRequestID(t *testing.T) {
+	codec := NewJSONCodec()
+	_, err := codec.Decode([]byte(`{
+		"request_id":"01JINVALIDBODY",
+		"operation":"acquire",
+		"body":{}
+	}`))
+	var decodeErr *DecodeError
+	if !errors.As(err, &decodeErr) {
+		t.Fatalf("Decode() error = %v, want *DecodeError", err)
+	}
+	if decodeErr.RequestID != "01JINVALIDBODY" {
+		t.Errorf("RequestID = %q, want 01JINVALIDBODY", decodeErr.RequestID)
+	}
+}
+
+func TestJSONCodecMalformedJSONHasNoDecodeError(t *testing.T) {
+	codec := NewJSONCodec()
+	_, err := codec.Decode([]byte(`not JSON`))
+	var decodeErr *DecodeError
+	if errors.As(err, &decodeErr) {
+		t.Errorf("Decode() error = %#v, want error without request ID", decodeErr)
 	}
 }
 

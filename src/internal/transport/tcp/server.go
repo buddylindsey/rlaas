@@ -160,7 +160,12 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 
 		request, err := s.codec.Decode(payload)
 		if err != nil {
-			if !s.writeError(connection, "", "invalid_request", err) {
+			requestID := ""
+			var decodeErr *protocol.DecodeError
+			if errors.As(err, &decodeErr) {
+				requestID = decodeErr.RequestID
+			}
+			if !s.writeError(connection, requestID, "invalid_request", err) {
 				return
 			}
 			if !s.markIdle(connection) {

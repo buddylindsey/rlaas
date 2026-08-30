@@ -115,6 +115,27 @@ func TestServeConnectionReturnsJSONForInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestServeConnectionPreservesRequestIDForInvalidBody(t *testing.T) {
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
+	defer clientConnection.Close()
+
+	request := []byte(`{
+		"request_id":"01JINVALIDBODY",
+		"operation":"acquire",
+		"body":{}
+	}`)
+	if err := writeTestFrame(clientConnection, request); err != nil {
+		t.Fatalf("writeTestFrame() error = %v", err)
+	}
+	response := readJSONErrorResponse(t, clientConnection)
+	if response.RequestID != "01JINVALIDBODY" {
+		t.Errorf("RequestID = %q, want 01JINVALIDBODY", response.RequestID)
+	}
+	if response.Status != "error" || response.Error.Code != "invalid_request" {
+		t.Errorf("response = %#v, want invalid_request error", response)
+	}
+}
+
 func TestServeConnectionReturnsJSONWhenLimiterIsMissing(t *testing.T) {
 	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
 	defer clientConnection.Close()
