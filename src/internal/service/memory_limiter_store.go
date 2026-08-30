@@ -9,13 +9,13 @@ import (
 // MemoryLimiterStore stores limiter configurations in process memory.
 type MemoryLimiterStore struct {
 	mu       sync.RWMutex
-	limiters map[string]*FixedWindowLimiter
+	limiters map[string]limiter
 }
 
 var _ LimiterStore = (*MemoryLimiterStore)(nil)
 
 func NewMemoryLimiterStore() *MemoryLimiterStore {
-	return &MemoryLimiterStore{limiters: make(map[string]*FixedWindowLimiter)}
+	return &MemoryLimiterStore{limiters: make(map[string]limiter)}
 }
 
 func (s *MemoryLimiterStore) Create(ctx context.Context, limiter LimiterConfiguration) error {
@@ -30,12 +30,16 @@ func (s *MemoryLimiterStore) Create(ctx context.Context, limiter LimiterConfigur
 	defer s.mu.Unlock()
 
 	if existing, exists := s.limiters[limiter.Name()]; exists {
-		if limiterConfiguration(existing) == limiter {
+		if existing.Configuration() == limiter {
 			return ErrLimiterAlreadyExists
 		}
 		return ErrLimiterConfigurationConflict
 	}
-	s.limiters[limiter.Name()] = newFixedWindowLimiter(limiter)
+	created, err := newLimiter(limiter)
+	if err != nil {
+		return err
+	}
+	s.limiters[limiter.Name()] = created
 	return nil
 }
 
@@ -50,7 +54,7 @@ func (s *MemoryLimiterStore) Get(ctx context.Context, name string) (LimiterConfi
 	if !exists {
 		return LimiterConfiguration{}, ErrLimiterNotFound
 	}
-	return limiterConfiguration(limiter), nil
+	return limiter.Configuration(), nil
 }
 
 func (s *MemoryLimiterStore) List(ctx context.Context) ([]LimiterConfiguration, error) {
@@ -61,7 +65,7 @@ func (s *MemoryLimiterStore) List(ctx context.Context) ([]LimiterConfiguration, 
 	s.mu.RLock()
 	limiters := make([]LimiterConfiguration, 0, len(s.limiters))
 	for _, limiter := range s.limiters {
-		limiters = append(limiters, limiterConfiguration(limiter))
+		limiters = append(limiters, limiter.Configuration())
 	}
 	s.mu.RUnlock()
 
@@ -82,15 +86,6 @@ func (s *MemoryLimiterStore) Acquire(ctx context.Context, name string) (AcquireR
 		return AcquireResult{}, ErrLimiterNotFound
 	}
 	return limiter.Acquire(), nil
-}
-
-func limiterConfiguration(limiter *FixedWindowLimiter) LimiterConfiguration {
-	return LimiterConfiguration{
-		name:        limiter.Name,
-		limiterType: LimiterTypeFixedWindow,
-		timeWindow:  limiter.TimeWindow,
-		budget:      limiter.Budget,
-	}
 }
 
 func (s *MemoryLimiterStore) Delete(ctx context.Context, name string) error {

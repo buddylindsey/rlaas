@@ -79,9 +79,17 @@ Limiter configuration and atomic acquisition are accessed through the
 Configurations are normalized to trimmed, lowercase names and validated as
 immutable service values before they reach the store. Stores defensively reject
 invalid zero values.
-The initial implementation keeps fixed-window limiters in a map protected by
-an RWMutex. Each limiter has its own mutex protecting window state, allowing
-different named limiters to process acquisitions independently.
+The initial implementation keeps algorithm-neutral limiter instances in a map
+protected by an RWMutex. An explicit factory selects either fixed-window or
+token-bucket behavior from the validated configuration; unsupported types never
+fall back to another algorithm. Each limiter has its own mutex protecting its
+mutable state, allowing different named limiters to process acquisitions
+independently.
 
-The next implementation work is persistent storage and additional limiter
+Both algorithms use the same budget and time-window configuration. Fixed window
+spends the budget within discrete windows. Token bucket starts full, uses budget
+as its capacity, and refills continuously at `budget / time_window`; it reports
+only whole immediately available permits as remaining.
+
+Future implementation work includes persistent storage and additional limiter
 algorithms.

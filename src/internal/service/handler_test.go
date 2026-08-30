@@ -44,13 +44,59 @@ func TestBasicHandlerRejectsUnsupportedLimiterType(t *testing.T) {
 		Type:      RequestCreateLimiter,
 		Body: CreateLimiterRequest{
 			Name:         "github-api",
-			LimiterType:  "token_bucket",
+			LimiterType:  "sliding_window",
 			TimeWindowMs: 1_000,
 			Budget:       10,
 		},
 	})
 	if err == nil {
 		t.Fatal("Handle() error = nil, want unsupported limiter type error")
+	}
+}
+
+func TestBasicHandlerCreatesAndAcquiresTokenBucket(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	handler := NewBasicHandlerWithStore(store)
+	create := Request{
+		RequestID: "01JTOKENCREATE",
+		Type:      RequestCreateLimiter,
+		Body: CreateLimiterRequest{
+			Name:         "external-api",
+			LimiterType:  LimiterTypeTokenBucket,
+			TimeWindowMs: 3_600_000,
+			Budget:       1,
+		},
+	}
+	if _, err := handler.Handle(context.Background(), create); err != nil {
+		t.Fatalf("create Handle() error = %v", err)
+	}
+
+	configuration, err := store.Get(context.Background(), "external-api")
+	if err != nil {
+		t.Fatalf("store.Get() error = %v", err)
+	}
+	if configuration.Type() != LimiterTypeTokenBucket {
+		t.Errorf("stored type = %q, want %q", configuration.Type(), LimiterTypeTokenBucket)
+	}
+
+	acquire := Request{
+		RequestID: "01JTOKENACQUIRE",
+		Type:      RequestAcquire,
+		Body:      AcquireRequest{Name: "external-api"},
+	}
+	first, err := handler.Handle(context.Background(), acquire)
+	if err != nil {
+		t.Fatalf("first acquire Handle() error = %v", err)
+	}
+	second, err := handler.Handle(context.Background(), acquire)
+	if err != nil {
+		t.Fatalf("second acquire Handle() error = %v", err)
+	}
+	if result := first.Body.(AcquireResponse); !result.Allowed {
+		t.Errorf("first acquire = %#v, want allowed", result)
+	}
+	if result := second.Body.(AcquireResponse); result.Allowed || result.RetryAfterMs == 0 {
+		t.Errorf("second acquire = %#v, want denied with retry time", result)
 	}
 }
 

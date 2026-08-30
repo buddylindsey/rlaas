@@ -186,7 +186,6 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 	for {
 		requestID = ""
 		operation = ""
-		started := time.Now()
 		payload, err := s.readFrame(connection)
 		if err != nil {
 			if !isExpectedDisconnect(err) {
@@ -194,6 +193,7 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 			}
 			return
 		}
+		started := time.Now()
 		if !s.markActive(connection) {
 			return
 		}

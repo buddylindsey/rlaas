@@ -54,6 +54,51 @@ func TestMemoryLimiterStoreRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestMemoryLimiterStoreCreatesSelectedLimiterType(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	ctx := context.Background()
+
+	fixedWindow := newTestLimiterConfigurationOfType(t, "fixed", LimiterTypeFixedWindow, 1_000, 1)
+	tokenBucket := newTestLimiterConfigurationOfType(t, "token", LimiterTypeTokenBucket, 1_000, 1)
+	if err := store.Create(ctx, fixedWindow); err != nil {
+		t.Fatalf("Create(fixed_window) error = %v", err)
+	}
+	if err := store.Create(ctx, tokenBucket); err != nil {
+		t.Fatalf("Create(token_bucket) error = %v", err)
+	}
+
+	if _, ok := store.limiters["fixed"].(*FixedWindowLimiter); !ok {
+		t.Errorf("fixed limiter type = %T, want *FixedWindowLimiter", store.limiters["fixed"])
+	}
+	if _, ok := store.limiters["token"].(*TokenBucketLimiter); !ok {
+		t.Errorf("token limiter type = %T, want *TokenBucketLimiter", store.limiters["token"])
+	}
+}
+
+func TestMemoryLimiterStoreIncludesAlgorithmInConfigurationIdentity(t *testing.T) {
+	store := NewMemoryLimiterStore()
+	ctx := context.Background()
+	tokenBucket := newTestLimiterConfigurationOfType(t, "api", LimiterTypeTokenBucket, 1_000, 10)
+	if err := store.Create(ctx, tokenBucket); err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	if err := store.Create(ctx, tokenBucket); !errors.Is(err, ErrLimiterAlreadyExists) {
+		t.Fatalf("identical token bucket Create() error = %v, want ErrLimiterAlreadyExists", err)
+	}
+
+	fixedWindow := newTestLimiterConfigurationOfType(t, "api", LimiterTypeFixedWindow, 1_000, 10)
+	if err := store.Create(ctx, fixedWindow); !errors.Is(err, ErrLimiterConfigurationConflict) {
+		t.Fatalf("different algorithm Create() error = %v, want ErrLimiterConfigurationConflict", err)
+	}
+}
+
+func TestLimiterFactoryDoesNotDefaultUnknownType(t *testing.T) {
+	_, err := newLimiter(LimiterConfiguration{limiterType: LimiterType("unknown")})
+	if !errors.Is(err, ErrInvalidLimiterConfiguration) {
+		t.Fatalf("newLimiter() error = %v, want ErrInvalidLimiterConfiguration", err)
+	}
+}
+
 func TestMemoryLimiterStoreListIsSorted(t *testing.T) {
 	store := NewMemoryLimiterStore()
 	ctx := context.Background()
@@ -143,8 +188,12 @@ func TestMemoryLimiterStoreConcurrentAccess(t *testing.T) {
 }
 
 func newTestLimiterConfiguration(t *testing.T, name string, timeWindowMs, budget uint64) LimiterConfiguration {
+	return newTestLimiterConfigurationOfType(t, name, LimiterTypeFixedWindow, timeWindowMs, budget)
+}
+
+func newTestLimiterConfigurationOfType(t *testing.T, name string, limiterType LimiterType, timeWindowMs, budget uint64) LimiterConfiguration {
 	t.Helper()
-	configuration, err := NewLimiterConfiguration(name, LimiterTypeFixedWindow, timeWindowMs, budget)
+	configuration, err := NewLimiterConfiguration(name, limiterType, timeWindowMs, budget)
 	if err != nil {
 		t.Fatalf("NewLimiterConfiguration() error = %v", err)
 	}

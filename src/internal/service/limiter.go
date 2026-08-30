@@ -5,19 +5,26 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync"
 	"time"
 )
 
 // LimiterType identifies a rate-limiting algorithm.
 type LimiterType string
 
-// LimiterTypeFixedWindow applies a fixed budget within each time window.
-const LimiterTypeFixedWindow LimiterType = "fixed_window"
+const (
+	// LimiterTypeFixedWindow applies a fixed budget within each time window.
+	LimiterTypeFixedWindow LimiterType = "fixed_window"
+	// LimiterTypeTokenBucket continuously refills a bucket over the configured window.
+	LimiterTypeTokenBucket LimiterType = "token_bucket"
+)
 
 // MaxLimiterNameLength is the maximum encoded length of a normalized limiter
 // name. Limiter names are ASCII, so the byte and character limits are equal.
 const MaxLimiterNameLength = 128
+
+// maxTokenBucketBudget is the largest integer for which float64 can represent
+// every whole-token transition exactly.
+const maxTokenBucketBudget = uint64(1<<53 - 1)
 
 // ErrInvalidLimiterConfiguration identifies a configuration that violates
 // limiter domain invariants.
@@ -71,7 +78,9 @@ func (c LimiterConfiguration) Validate() error {
 	if err := validateNormalizedLimiterName(c.name); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidLimiterConfiguration, err)
 	}
-	if c.limiterType != LimiterTypeFixedWindow {
+	switch c.limiterType {
+	case LimiterTypeFixedWindow, LimiterTypeTokenBucket:
+	default:
 		return fmt.Errorf("%w: unsupported limiter type %q", ErrInvalidLimiterConfiguration, c.limiterType)
 	}
 	if c.timeWindow <= 0 {
@@ -79,6 +88,9 @@ func (c LimiterConfiguration) Validate() error {
 	}
 	if c.budget == 0 {
 		return fmt.Errorf("%w: budget must be greater than zero", ErrInvalidLimiterConfiguration)
+	}
+	if c.limiterType == LimiterTypeTokenBucket && c.budget > maxTokenBucketBudget {
+		return fmt.Errorf("%w: token bucket budget must not exceed %d", ErrInvalidLimiterConfiguration, maxTokenBucketBudget)
 	}
 	return nil
 }
@@ -111,60 +123,25 @@ func isLimiterNameCharacter(character rune) bool {
 		character == '.' || character == ':' || character == '_' || character == '-'
 }
 
-// FixedWindowLimiter tracks permit usage during a fixed interval.
-type FixedWindowLimiter struct {
-	mu          sync.Mutex
-	Name        string
-	Budget      uint64
-	TimeWindow  time.Duration
-	Count       uint64
-	WindowStart time.Time
-}
-
 type AcquireResult struct {
 	Allowed      bool
 	Remaining    uint64
 	RetryAfterMs uint64
 }
 
-func newFixedWindowLimiter(configuration LimiterConfiguration) *FixedWindowLimiter {
-	return &FixedWindowLimiter{
-		Name:       configuration.Name(),
-		Budget:     configuration.Budget(),
-		TimeWindow: configuration.TimeWindow(),
-	}
+type limiter interface {
+	Configuration() LimiterConfiguration
+	Acquire() AcquireResult
 }
 
-// Acquire attempts to consume one permit at the current time.
-func (l *FixedWindowLimiter) Acquire() AcquireResult {
-	return l.acquireAt(time.Now())
-}
-
-func (l *FixedWindowLimiter) acquireAt(now time.Time) AcquireResult {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.WindowStart.IsZero() || now.Sub(l.WindowStart) >= l.TimeWindow {
-		l.WindowStart = now
-		l.Count = 0
-	}
-
-	if l.Count >= l.Budget {
-		retryAfter := l.WindowStart.Add(l.TimeWindow).Sub(now)
-		if retryAfter < 0 {
-			retryAfter = 0
-		}
-		return AcquireResult{
-			Allowed:      false,
-			Remaining:    0,
-			RetryAfterMs: durationMillisecondsCeil(retryAfter),
-		}
-	}
-
-	l.Count++
-	return AcquireResult{
-		Allowed:   true,
-		Remaining: l.Budget - l.Count,
+func newLimiter(configuration LimiterConfiguration) (limiter, error) {
+	switch configuration.Type() {
+	case LimiterTypeFixedWindow:
+		return newFixedWindowLimiter(configuration), nil
+	case LimiterTypeTokenBucket:
+		return newTokenBucketLimiter(configuration), nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported limiter type %q", ErrInvalidLimiterConfiguration, configuration.Type())
 	}
 }
 

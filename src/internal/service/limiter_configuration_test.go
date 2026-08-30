@@ -27,6 +27,16 @@ func TestNewLimiterConfigurationNormalizesName(t *testing.T) {
 	}
 }
 
+func TestNewLimiterConfigurationAcceptsTokenBucket(t *testing.T) {
+	configuration, err := NewLimiterConfiguration("api", LimiterTypeTokenBucket, 3_600_000, 200)
+	if err != nil {
+		t.Fatalf("NewLimiterConfiguration() error = %v", err)
+	}
+	if configuration.Type() != LimiterTypeTokenBucket {
+		t.Errorf("Type() = %q, want %q", configuration.Type(), LimiterTypeTokenBucket)
+	}
+}
+
 func TestNewLimiterConfigurationRejectsInvalidValues(t *testing.T) {
 	maxDurationMs := uint64(math.MaxInt64 / int64(time.Millisecond))
 	tests := []struct {
@@ -40,10 +50,11 @@ func TestNewLimiterConfigurationRejectsInvalidValues(t *testing.T) {
 		{name: "github api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
 		{name: "github/api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
 		{name: "github-🔥", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 1},
-		{name: "api", limiterType: "token_bucket", timeWindowMs: 1_000, budget: 1},
+		{name: "api", limiterType: "sliding_window", timeWindowMs: 1_000, budget: 1},
 		{name: "api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 0, budget: 1},
 		{name: "api", limiterType: LimiterTypeFixedWindow, timeWindowMs: maxDurationMs + 1, budget: 1},
 		{name: "api", limiterType: LimiterTypeFixedWindow, timeWindowMs: 1_000, budget: 0},
+		{name: "api", limiterType: LimiterTypeTokenBucket, timeWindowMs: 1_000, budget: maxTokenBucketBudget + 1},
 	}
 
 	for _, test := range tests {

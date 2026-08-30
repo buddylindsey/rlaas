@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -96,6 +97,53 @@ func TestServeConnectionCreatesLimiterAndReturnsJSON(t *testing.T) {
 	}
 	if acquireResponse.Body.Remaining != 9 || acquireResponse.Body.RetryAfterMs != 0 {
 		t.Errorf("acquire response body = %#v", acquireResponse.Body)
+	}
+}
+
+func TestServeConnectionCreatesTokenBucketLimiter(t *testing.T) {
+	clientConnection := startTestConnection(t, protocol.NewJSONCodec(), service.NewBasicHandler())
+	defer clientConnection.Close()
+
+	create := []byte(`{
+		"request_id":"01JTOKENCREATE",
+		"operation":"create_limiter",
+		"body":{"name":"external-api","type":"token_bucket","time_window_ms":3600000,"budget":1}
+	}`)
+	if err := writeTestFrame(clientConnection, create); err != nil {
+		t.Fatalf("write create frame error = %v", err)
+	}
+	if _, err := readTestFrame(clientConnection); err != nil {
+		t.Fatalf("read create response error = %v", err)
+	}
+
+	for call := 1; call <= 2; call++ {
+		acquire := []byte(fmt.Sprintf(`{
+			"request_id":"01JTOKENACQUIRE%d",
+			"operation":"acquire",
+			"body":{"name":"external-api"}
+		}`, call))
+		if err := writeTestFrame(clientConnection, acquire); err != nil {
+			t.Fatalf("write acquire %d frame error = %v", call, err)
+		}
+		payload, err := readTestFrame(clientConnection)
+		if err != nil {
+			t.Fatalf("read acquire %d response error = %v", call, err)
+		}
+		var response struct {
+			Body struct {
+				Allowed      bool   `json:"allowed"`
+				RetryAfterMs uint64 `json:"retry_after_ms"`
+			} `json:"body"`
+		}
+		if err := json.Unmarshal(payload, &response); err != nil {
+			t.Fatalf("decode acquire %d response: %v", call, err)
+		}
+		if call == 1 && !response.Body.Allowed {
+			t.Errorf("first token-bucket acquire denied")
+		}
+		if call == 2 && (response.Body.Allowed || response.Body.RetryAfterMs == 0) {
+			t.Errorf("second token-bucket acquire = %#v, want denied with retry time", response.Body)
+		}
 	}
 }
 
@@ -195,7 +243,7 @@ func TestServeConnectionReturnsJSONForInvalidLimiterConfiguration(t *testing.T) 
 	request := []byte(`{
 		"request_id":"01JINVALID1",
 		"operation":"create_limiter",
-		"body":{"name":"api","type":"token_bucket","time_window_ms":1000,"budget":10}
+		"body":{"name":"api","type":"sliding_window","time_window_ms":1000,"budget":10}
 	}`)
 	if err := writeTestFrame(clientConnection, request); err != nil {
 		t.Fatalf("writeTestFrame() error = %v", err)

@@ -1,4 +1,6 @@
-# Python fixed-window example
+# Python examples
+
+## Fixed window
 
 This example opens three persistent TCP connections and shares them between
 three worker threads. The workers make 375 acquisition requests against a
@@ -27,3 +29,23 @@ The script also reports the total measured request time and average round-trip
 latency. Because requests run concurrently, total request time is the sum of
 individual request durations rather than wall-clock runtime. The example uses
 only the Python standard library.
+
+## Token bucket
+
+The token-bucket example creates a fresh limiter with a capacity of four permits
+and a two-second full refill window:
+
+```sh
+python3 examples/python/token_bucket.py
+```
+
+It immediately exhausts the bucket and confirms that another request is
+denied. It then waits for the server-provided `retry_after_ms`, which is roughly
+500 milliseconds, and confirms that one request succeeds before the complete
+two-second window has elapsed. An immediate request after that is denied again.
+
+This partial-window refill is the visible difference from fixed-window
+behavior. The script prints `Algorithm: token_bucket`, reports each observation,
+and exits with status zero only when the expected behavior occurs. It deletes
+and recreates its named limiter on each run so repeated runs start with a full
+bucket.

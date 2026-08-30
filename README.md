@@ -24,6 +24,7 @@ A standalone service for consistent, shared rate limiting across applications.
 - [What works today?](#what-works-today)
 - [Quick start](#quick-start)
 - [Try the concurrent Python example](#try-the-concurrent-python-example)
+- [Try the token-bucket example](#try-the-token-bucket-example)
 - [How it works](#how-it-works)
 - [Project status and direction](#project-status-and-direction)
 - [Development](#development)
@@ -36,9 +37,11 @@ create named limiters, and ask the service to acquire permits. This gives
 multiple clients one shared place to enforce request budgets instead of
 implementing and coordinating independent rate limiters in every application.
 
-The first supported algorithm is a fixed window. A limiter such as “300 calls
-per minute” allows the first 300 acquisitions in its window and denies later
-requests until the next window begins.
+RLaaS currently supports fixed-window and token-bucket algorithms. A fixed
+window such as “300 calls per minute” allows the first 300 acquisitions in its
+window and denies later requests until the next window begins. A token bucket
+uses the same budget and window configuration as a continuous refill rate,
+allowing unused permits to accumulate for bursts up to the configured budget.
 
 ## 🎯 Why does this project exist?
 
@@ -72,7 +75,7 @@ production are developed incrementally.
 - Four-byte, big-endian, length-prefixed message frames
 - JSON request and response codec
 - Strict JSON input validation with bounded request IDs and limiter names
-- Named fixed-window limiters
+- Named fixed-window and token-bucket limiters
 - Create, acquire, and delete limiter operations
 - Atomic permit acquisition with per-limiter locking
 - Idempotent creation for identical limiter configurations
@@ -119,6 +122,11 @@ has this payload:
 The easiest way to send correctly framed requests is the included Python
 example.
 
+To create a token bucket instead, set `type` to `token_bucket`; no additional
+algorithm-specific fields are required. For example, a budget of `200` and a
+`time_window_ms` of `3600000` creates a bucket with capacity 200 that refills at
+200 permits per hour.
+
 ## 🐍 Try the concurrent Python example
 
 With the server running, open another terminal and run:
@@ -149,6 +157,19 @@ minute expires to see the server retain the exhausted window and deny all 375
 requests. See [the Python example documentation](examples/python/README.md) for
 details.
 
+## 🪣 Try the token-bucket example
+
+Run the token-bucket demonstration against the running server:
+
+```sh
+python3 examples/python/token_bucket.py
+```
+
+The script exhausts a bucket, observes the server's `retry_after_ms`, and waits
+for only one token to refill. It then proves another request succeeds before the
+full configured window elapses, which makes the continuous `token_bucket`
+behavior directly visible. The script resets its limiter on each run.
+
 ## 🧭 How it works
 
 ```text
@@ -158,7 +179,7 @@ TCP connection
   → typed service request
   → service handler
   → limiter store
-  → fixed-window limiter
+  → selected limiter algorithm
   → typed service response
   → JSON codec
   → length-prefixed frame
@@ -171,7 +192,8 @@ The layers are intentionally separated:
   responses.
 - **Service** validates operations and coordinates limiter behavior.
 - **Storage** owns limiter lookup and atomic acquisition behind an interface.
-- **Fixed-window limiter** owns mutable window state behind its own mutex.
+- **Limiter implementation** owns its mutable algorithm state behind its own
+  mutex. The store uses an explicit factory to select the configured algorithm.
 
 See [the architecture notes](docs/architecture.md) for more detail.
 
@@ -205,13 +227,14 @@ RLAAS_LOG_LEVEL=warn go run ./src/cmd/server
 ## 🧪 Project status and direction
 
 RLaaS currently provides a functional single-process path from a network
-request through an atomic fixed-window acquisition. It does not yet provide:
+request through atomic fixed-window and token-bucket acquisitions. It does not
+yet provide:
 
 - Persistent limiter configuration or state
 - Coordination between multiple RLaaS instances
 - Authentication, authorization, or transport encryption
 - Operational metrics, tracing, or service-level guarantees
-- Additional algorithms such as sliding windows or token buckets
+- Additional algorithms such as sliding windows
 
 The goal is to evolve RLaaS into a service that teams can confidently operate
 in production. Planned work includes persistent storage, distributed
