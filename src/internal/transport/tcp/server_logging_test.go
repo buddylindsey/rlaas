@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 
 	"rlaas/src/internal/protocol"
@@ -27,7 +28,6 @@ func TestRequestLifecycleLogsPreserveRequestID(t *testing.T) {
 	if !server.addConnection(serverConnection) {
 		t.Fatal("addConnection() = false, want true")
 	}
-	server.wg.Add(1)
 	go server.serveConnection(context.Background(), serverConnection)
 
 	request := []byte(`{
@@ -69,6 +69,79 @@ func TestRequestLifecycleLogsPreserveRequestID(t *testing.T) {
 	if _, ok := completed["duration_ms"]; !ok {
 		t.Error("error response log has no duration_ms")
 	}
+}
+
+func TestHandlerPanicIsContainedAndLogged(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	config := DefaultServerConfig("")
+	config.Logger = logger
+	handler := &panicOnceHandler{}
+	server, err := NewServer(config, echoCodec{}, handler)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	firstServerConnection, firstClientConnection := net.Pipe()
+	if !server.addConnection(firstServerConnection) {
+		t.Fatal("first addConnection() = false, want true")
+	}
+	go server.serveConnection(context.Background(), firstServerConnection)
+	if err := writeTestFrame(firstClientConnection, []byte("first")); err != nil {
+		t.Fatalf("first writeTestFrame() error = %v", err)
+	}
+	assertConnectionClosed(t, firstClientConnection)
+	if err := firstClientConnection.Close(); err != nil {
+		t.Fatalf("firstClientConnection.Close() error = %v", err)
+	}
+	server.wg.Wait()
+
+	secondServerConnection, secondClientConnection := net.Pipe()
+	if !server.addConnection(secondServerConnection) {
+		t.Fatal("second addConnection() = false, want true")
+	}
+	go server.serveConnection(context.Background(), secondServerConnection)
+	if err := writeTestFrame(secondClientConnection, []byte("second")); err != nil {
+		t.Fatalf("second writeTestFrame() error = %v", err)
+	}
+	response, err := readTestFrame(secondClientConnection)
+	if err != nil {
+		t.Fatalf("second readTestFrame() error = %v", err)
+	}
+	if string(response) != "second" {
+		t.Errorf("second response = %q, want second", response)
+	}
+	if err := secondClientConnection.Close(); err != nil {
+		t.Fatalf("secondClientConnection.Close() error = %v", err)
+	}
+	server.wg.Wait()
+
+	record := findLogRecord(t, decodeLogRecords(t, output.Bytes()), "request panic recovered")
+	if record["request_id"] != "test-request" {
+		t.Errorf("request_id = %v, want test-request", record["request_id"])
+	}
+	if record["operation"] != "echo" {
+		t.Errorf("operation = %v, want echo", record["operation"])
+	}
+	if record["panic"] != "handler panic" {
+		t.Errorf("panic = %v, want handler panic", record["panic"])
+	}
+	if record["stack_trace"] == "" {
+		t.Error("stack_trace is empty")
+	}
+}
+
+type panicOnceHandler struct {
+	once sync.Once
+}
+
+func (h *panicOnceHandler) Handle(_ context.Context, request service.Request) (service.Response, error) {
+	panicked := false
+	h.once.Do(func() { panicked = true })
+	if panicked {
+		panic("handler panic")
+	}
+	return service.Response{RequestID: request.RequestID, Status: service.StatusOK, Body: request.Body}, nil
 }
 
 func decodeLogRecords(t *testing.T, payload []byte) []map[string]any {

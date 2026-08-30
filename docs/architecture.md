@@ -31,6 +31,12 @@ correlates events before a request can be decoded; after decoding, every request
 event carries its client-provided request ID and operation through handling and
 response delivery. Payload bodies are deliberately excluded from logs.
 
+Each connection goroutine also contains unexpected panics from request decoding
+or handling. The affected connection is closed because its request outcome may
+be ambiguous, while the server continues accepting other connections. The panic
+record includes the connection metadata, available request metadata, and a stack
+trace for diagnosis.
+
 The frame format is a four-byte unsigned big-endian payload length followed by
 that number of payload bytes. This allows payloads to contain arbitrary data,
 including newline characters.

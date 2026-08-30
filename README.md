@@ -67,6 +67,7 @@ production are developed incrementally.
 - Concurrent TCP server with persistent client connections
 - Bounded connections with idle, frame-read, and response-write timeouts
 - Graceful shutdown for active requests
+- Per-connection panic containment with correlated stack traces
 - Structured JSON logs with request lifecycle correlation
 - Four-byte, big-endian, length-prefixed message frames
 - JSON request and response codec

@@ -99,6 +99,41 @@ func TestServerRejectsConnectionsOverLimit(t *testing.T) {
 	}
 }
 
+func TestConnectionRegistrationAccountsForGoroutineBeforeReturning(t *testing.T) {
+	config := DefaultServerConfig("")
+	server, err := NewServer(config, echoCodec{}, echoHandler{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	serverConnection, clientConnection := net.Pipe()
+	if !server.addConnection(serverConnection) {
+		t.Fatal("addConnection() = false, want true")
+	}
+	go server.serveConnection(context.Background(), serverConnection)
+
+	connectionsFinished := make(chan struct{})
+	go func() {
+		server.wg.Wait()
+		close(connectionsFinished)
+	}()
+
+	select {
+	case <-connectionsFinished:
+		t.Fatal("Wait() returned while the registered connection was active")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	if err := clientConnection.Close(); err != nil {
+		t.Fatalf("clientConnection.Close() error = %v", err)
+	}
+	select {
+	case <-connectionsFinished:
+	case <-time.After(time.Second):
+		t.Fatal("Wait() did not return after the connection closed")
+	}
+}
+
 func TestGracefulShutdownAllowsActiveRequestToFinish(t *testing.T) {
 	config := DefaultServerConfig("")
 	config.ShutdownTimeout = time.Second
@@ -184,7 +219,6 @@ func startTestConnectionWithConfig(t *testing.T, config ServerConfig, codec echo
 	if !server.addConnection(serverConnection) {
 		t.Fatal("addConnection() = false, want true")
 	}
-	server.wg.Add(1)
 	go server.serveConnection(context.Background(), serverConnection)
 	return clientConnection
 }

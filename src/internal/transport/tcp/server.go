@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -156,7 +157,6 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			"connection_count", s.connectionCount(),
 		)
 
-		s.wg.Add(1)
 		go s.serveConnection(workCtx, connection)
 	}
 }
@@ -166,7 +166,17 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 		"connection_id", s.connectionID(connection),
 		"remote_address", connection.RemoteAddr().String(),
 	)
+	var requestID string
+	var operation service.RequestType
 	defer func() {
+		if recovered := recover(); recovered != nil {
+			connectionLogger.Error("request panic recovered",
+				"request_id", requestID,
+				"operation", operation,
+				"panic", fmt.Sprint(recovered),
+				"stack_trace", string(debug.Stack()),
+			)
+		}
 		connection.Close()
 		s.removeConnection(connection)
 		connectionLogger.Info("connection closed")
@@ -174,6 +184,8 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 	}()
 
 	for {
+		requestID = ""
+		operation = ""
 		started := time.Now()
 		payload, err := s.readFrame(connection)
 		if err != nil {
@@ -210,6 +222,8 @@ func (s *Server) serveConnection(ctx context.Context, connection net.Conn) {
 			}
 			continue
 		}
+		requestID = request.RequestID
+		operation = request.Type
 		requestLogger := connectionLogger.With(
 			"request_id", request.RequestID,
 			"operation", request.Type,
@@ -328,6 +342,7 @@ func (s *Server) addConnection(connection net.Conn) bool {
 	if s.shuttingDown || len(s.connections) >= s.config.MaxConnections {
 		return false
 	}
+	s.wg.Add(1)
 	s.connections[connection] = &connectionState{id: s.nextConnID.Add(1)}
 	return true
 }

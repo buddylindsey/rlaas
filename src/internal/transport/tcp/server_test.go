@@ -278,7 +278,6 @@ func startTestConnection(t *testing.T, codec protocol.Codec, handler service.Han
 	if !server.addConnection(serverConnection) {
 		t.Fatal("addConnection() = false, want true")
 	}
-	server.wg.Add(1)
 	go server.serveConnection(context.Background(), serverConnection)
 	return clientConnection
 }
